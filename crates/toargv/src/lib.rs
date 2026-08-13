@@ -44,11 +44,6 @@ pub fn full_argv(prefix: &[OsString], expanded: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Renders an argument vector as a compact JSON array.
-pub fn render_json(arguments: &[String]) -> String {
-    serde_json::to_string(arguments).expect("serializing strings cannot fail")
-}
-
 /// Renders an argument vector as shell syntax that preserves argument
 /// boundaries.
 ///

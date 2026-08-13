@@ -26,12 +26,11 @@ files = [\"one.txt\", \"two words.txt\"]
 ";
 
 #[test]
-fn renders_interpolated_arguments_as_json() {
+fn renders_interpolated_arguments() {
     let (_directory, config) = fixture(CONFIG);
 
     let output = toargv(&[
         &config,
-        "--json",
         "--",
         "--seed",
         "{seed}",
@@ -42,7 +41,7 @@ fn renders_interpolated_arguments_as_json() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "[\"--seed\",\"42\",\"source.txt\",\"--name=two words\"]\n"
+        "--seed 42 source.txt '--name=two words'\n"
     );
 }
 
@@ -65,7 +64,6 @@ fn expands_defaults_conditionals_spreads_and_repeated_pairs() {
 
     let output = toargv(&[
         &config,
-        "--json",
         "--",
         "--output={output:-result.txt}",
         "{?verbose:-v}",
@@ -76,7 +74,7 @@ fn expands_defaults_conditionals_spreads_and_repeated_pairs() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "[\"--output=result.txt\",\"-v\",\"one.txt\",\"two words.txt\",\"--file\",\"one.txt\",\"--file\",\"two words.txt\"]\n"
+        "'--output=result.txt' -v one.txt 'two words.txt' --file one.txt --file 'two words.txt'\n"
     );
 }
 
@@ -130,7 +128,6 @@ fn check_conflicts_with_output_and_execution_modes() {
     let (_directory, config) = fixture("");
 
     for incompatible in [
-        vec![&*config, "--check", "--json"],
         vec![&*config, "--check", "--exec", "true"],
         vec![&*config, "--check", "-n", "--exec", "true"],
     ] {
@@ -208,20 +205,5 @@ fn dry_run_prints_the_expanded_command() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         "program --name 'two words'\n"
-    );
-}
-
-#[test]
-fn dry_run_composes_with_json() {
-    let (_directory, config) = fixture("name = \"two words\"\n");
-
-    let output = toargv(&[
-        &config, "-n", "--json", "--exec", "program", "--", "--name", "{name}",
-    ]);
-
-    assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "[\"program\",\"--name\",\"two words\"]\n"
     );
 }

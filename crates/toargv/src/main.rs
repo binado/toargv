@@ -1,8 +1,8 @@
 use std::process::{self, ExitStatus};
 
 use clap::Parser;
-use toargv::cli::{Cli, Format, Mode};
-use toargv::{build_arguments, execute, full_argv, render_json, render_shell};
+use toargv::cli::{Cli, Mode};
+use toargv::{build_arguments, execute, full_argv, render_shell};
 
 fn main() {
     let cli = Cli::parse();
@@ -22,16 +22,10 @@ fn run(cli: Cli) -> Result<Option<ExitStatus>, toargv::Error> {
 
     match cli.mode() {
         Mode::Check => Ok(None),
-        Mode::Print { program, format } => {
+        Mode::Print { program } => {
             let prefix = program.map_or(&[][..], std::slice::from_ref);
             let argv = full_argv(prefix, &arguments);
-            println!(
-                "{}",
-                match format {
-                    Format::Shell => render_shell(&argv)?,
-                    Format::Json => render_json(&argv),
-                }
-            );
+            println!("{}", render_shell(&argv)?);
             Ok(None)
         }
         Mode::Exec { program } => execute(std::slice::from_ref(program), &arguments).map(Some),

@@ -12,7 +12,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 
 # single test / single file
-cargo test -p toargv --test cli renders_interpolated_arguments_as_json
+cargo test -p toargv --test cli renders_interpolated_arguments
 cargo test -p toargv-template --test template
 
 # run the CLI without installing
@@ -84,7 +84,7 @@ model fields private and expansion matches exhaustive.
 One flat command, no subcommands (`cli.rs`):
 
 ```text
-toargv <CONFIG> [--check | --json] [-n] [--exec <PROGRAM>] -- [TEMPLATE]...
+toargv <CONFIG> [--check] [-n] [--exec <PROGRAM>] -- [TEMPLATE]...
 ```
 
 `--` is the only template separator. Clap must not consume child/template flags
@@ -93,7 +93,7 @@ the template. This avoids a greedy executable option swallowing toargv's flags.
 
 All behaviors call `build_arguments` once, then use `Cli::mode`:
 
-- plain and `--json` print expanded argv;
+- default print expands argv as shell syntax;
 - `--check` expands silently;
 - `--exec PROGRAM` spawns the program with expanded argv;
 - `-n --exec PROGRAM` prints the full command instead.
@@ -109,8 +109,7 @@ An empty template is valid.
 - **default print is deliberately shell syntax.** `render_shell` quotes each
   argument with `shlex::try_quote`. Use only the `try_*` API; deprecated plain
   quoting APIs have security issues. Per-argument quoting lets
-  `Error::Unquotable` identify values containing NUL. `render_json` is the
-  unambiguous machine path.
+  `Error::Unquotable` identify values containing NUL.
 
 `full_argv` and `execute` must remain in step for dry-run output.
 

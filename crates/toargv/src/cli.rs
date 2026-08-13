@@ -15,12 +15,8 @@ pub struct Cli {
     pub config: PathBuf,
 
     /// Check that the template can be expanded, printing nothing
-    #[arg(long, conflicts_with_all = ["json", "dry_run", "exec"])]
+    #[arg(long, conflicts_with_all = ["dry_run", "exec"])]
     pub check: bool,
-
-    /// Print expanded arguments as a compact JSON array
-    #[arg(long)]
-    pub json: bool,
 
     /// Program to execute with the expanded arguments
     #[arg(long, value_name = "PROGRAM")]
@@ -35,26 +31,15 @@ pub struct Cli {
     pub template: Vec<String>,
 }
 
-/// How printed arguments are quoted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format {
-    /// POSIX-like shell syntax with safely quoted arguments.
-    Shell,
-    /// A compact JSON string array.
-    Json,
-}
-
 /// What a parsed invocation asks for, with the flag combinations already resolved.
 #[derive(Debug)]
 pub enum Mode<'a> {
     /// Validate template expansion without producing output.
     Check,
-    /// Render expanded arguments without executing a process.
+    /// Render expanded arguments as shell syntax without executing a process.
     Print {
         /// Program to print ahead of the expanded arguments for a dry run.
         program: Option<&'a OsString>,
-        /// Output representation.
-        format: Format,
     },
     /// Execute a command with expanded arguments appended.
     Exec {
@@ -85,11 +70,6 @@ impl Cli {
                 )
             } else {
                 None
-            },
-            format: if self.json {
-                Format::Json
-            } else {
-                Format::Shell
             },
         }
     }

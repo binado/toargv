@@ -25,16 +25,6 @@ $ toargv config.toml -- \
 --output results -v --input first.csv --input 'second file.csv'
 ```
 
-Or print an unambiguous JSON array:
-
-```console
-$ toargv config.toml --json -- \
-    --output '{output}' \
-    '{?verbose:-v}' \
-    '{*files:--input}'
-["--output","results","-v","--input","first.csv","--input","second file.csv"]
-```
-
 Quotes around placeholders protect them from the invoking shell. They are not
 part of the template argument.
 
@@ -53,20 +43,18 @@ cargo install --path crates/toargv
 ## Usage
 
 ```text
-toargv <CONFIG> [--check | --json] [-n] [--exec <PROGRAM>] -- [TEMPLATE]...
+toargv <CONFIG> [--check] [-n] [--exec <PROGRAM>] -- [TEMPLATE]...
 ```
 
 - `--` ends toargv's options. Every following argument is one template
   argument, even when it begins with `-`.
-- With no output or execution option, the expanded argv is printed as
-  shell-safe syntax.
-- `--json` prints the expanded argv as a compact JSON array.
+- With no execution option, the expanded argv is printed as shell-safe syntax.
 - `--exec PROGRAM` runs `PROGRAM` directly with the expanded arguments. No
   shell is involved.
 - `-n`, `--dry-run` prints the full command instead of running it. It requires
-  `--exec` and composes with `--json`.
+  `--exec`.
 - `--check` parses and expands the template without printing anything. It
-  conflicts with `--json`, `-n`, and `--exec`.
+  conflicts with `-n` and `--exec`.
 - An omitted or empty template is valid and expands to an empty argv.
 
 Configuration format is selected from the case-sensitive `.toml` or `.json`
@@ -151,8 +139,7 @@ toargv config.toml --exec program -- \
 The program is spawned directly. Spaces and shell metacharacters in
 configuration values remain inside their original argv entries. The default
 printed form provides the opposite guarantee: it is deliberately quoted shell
-syntax so that copy-paste or `eval` reproduces the same argument vector. Use
-`--json` for machine-readable output.
+syntax so that copy-paste or `eval` reproduces the same argument vector.
 
 ## License
 

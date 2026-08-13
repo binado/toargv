@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Removed
 
+- Remove `--json` output and `render_json`. Expanded argv is printed as shell
+  syntax; programmatic callers use the library or `--exec`.
 - Remove the bracket grammar, grammar codecs, `-f/--grammar-file`,
   `-g/--grammar`, join/count actions, and TextMate grammar.
 
