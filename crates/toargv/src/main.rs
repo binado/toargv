@@ -18,11 +18,12 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<Option<ExitStatus>, toargv::Error> {
-    let arguments = build_arguments(&cli.config, &cli.grammar_file, &cli.grammar)?;
+    let arguments = build_arguments(&cli.config, &cli.template)?;
 
     match cli.mode() {
         Mode::Check => Ok(None),
-        Mode::Print { prefix, format } => {
+        Mode::Print { program, format } => {
+            let prefix = program.map_or(&[][..], std::slice::from_ref);
             let argv = full_argv(prefix, &arguments);
             println!(
                 "{}",
@@ -33,7 +34,7 @@ fn run(cli: Cli) -> Result<Option<ExitStatus>, toargv::Error> {
             );
             Ok(None)
         }
-        Mode::Exec { command } => execute(command, &arguments).map(Some),
+        Mode::Exec { program } => execute(std::slice::from_ref(program), &arguments).map(Some),
     }
 }
 

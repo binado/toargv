@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/toargv", "crates/toargv-grammar"]
+members = ["crates/toargv", "crates/toargv-template"]
 resolver = "2"
 
 [workspace.package]
@@ -11,4 +11,4 @@ repository = "https://github.com/binado/toargv"
 homepage = "https://github.com/binado/toargv"
 
 [workspace.dependencies]
-toargv-grammar = { version = "0.1.0", path = "crates/toargv-grammar" }
+toargv-template = { version = "0.1.0", path = "crates/toargv-template" }

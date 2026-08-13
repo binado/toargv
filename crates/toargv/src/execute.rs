@@ -3,10 +3,10 @@ use std::process::{Command, ExitStatus};
 
 use crate::Error;
 
-/// Appends generated arguments to a command prefix and executes it directly.
+/// Appends expanded arguments to a command prefix and executes it directly.
 ///
 /// No shell is involved. The returned status is the child process's status.
-pub fn execute(command: &[OsString], generated: &[String]) -> Result<ExitStatus, Error> {
+pub fn execute(command: &[OsString], expanded: &[String]) -> Result<ExitStatus, Error> {
     let Some(program) = command.first() else {
         return Err(Error::MissingCommand);
     };
@@ -14,7 +14,7 @@ pub fn execute(command: &[OsString], generated: &[String]) -> Result<ExitStatus,
     // This argv shape is what `full_argv` prints for a dry run; keep them in step.
     Command::new(program)
         .args(&command[1..])
-        .args(generated)
+        .args(expanded)
         .status()
         .map_err(|source| Error::Execute {
             program: program.to_string_lossy().into_owned(),

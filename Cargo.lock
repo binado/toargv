@@ -360,12 +360,12 @@ dependencies = [
  "shlex",
  "tempfile",
  "thiserror",
- "toargv-grammar",
+ "toargv-template",
  "toml",
 ]
 
 [[package]]
-name = "toargv-grammar"
+name = "toargv-template"
 version = "0.1.0"
 dependencies = [
  "serde_json",

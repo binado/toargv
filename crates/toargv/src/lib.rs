@@ -1,70 +1,46 @@
 //! I/O and command execution for the `toargv` configuration-to-arguments CLI.
 //!
-//! [`build_arguments`] loads a TOML or JSON configuration and one or more
-//! inline grammar sources, then generates an ordered argument vector. The
-//! remaining helpers render or execute that vector.
+//! [`build_arguments`] loads a TOML or JSON configuration, parses an argv
+//! template, and expands it into an ordered argument vector. The remaining
+//! helpers render or execute that vector.
 #![warn(missing_docs)]
 
 /// Command-line parsing and resolved output modes.
 pub mod cli;
-/// Argument generation re-exported from [`toargv_grammar`].
-pub mod emit {
-    pub use toargv_grammar::emit::*;
-}
 /// Errors returned by loading, rendering, and execution.
 pub mod error;
 /// Direct process execution without a shell.
 pub mod execute;
-/// Grammar model types re-exported from [`toargv_grammar`].
-pub mod grammar {
-    pub use toargv_grammar::grammar::*;
-}
-/// Configuration and grammar loading.
+/// Configuration loading.
 pub mod load;
+/// Template parsing and expansion re-exported from [`toargv_template`].
+pub mod template {
+    pub use toargv_template::*;
+}
 
 use std::borrow::Cow;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use toargv_grammar::Grammar;
-
-pub use emit::generate;
 pub use error::Error;
 pub use execute::execute;
-pub use load::{load_config, load_grammar, load_inline_grammar};
+pub use load::load_config;
+pub use template::{Template, expand};
 
-/// Loads and layers grammar sources, then generates arguments from a config.
-///
-/// Grammar files are merged left to right before inline grammars are merged
-/// left to right. At least one grammar source is required.
-pub fn build_arguments(
-    config_path: &Path,
-    grammar_files: &[PathBuf],
-    inline_grammars: &[String],
-) -> Result<Vec<String>, Error> {
-    if grammar_files.is_empty() && inline_grammars.is_empty() {
-        return Err(Error::MissingGrammar);
-    }
-
+/// Loads a configuration, parses an argv template, and expands its arguments.
+pub fn build_arguments(config_path: &Path, template: &[String]) -> Result<Vec<String>, Error> {
     let config = load_config(config_path)?;
-    let mut grammar = Grammar::default();
-    for path in grammar_files {
-        grammar.merge(load_grammar(path)?);
-    }
-    for source in inline_grammars {
-        grammar.merge(load_inline_grammar(source)?);
-    }
-
-    Ok(generate(&config, &grammar)?)
+    let template = Template::parse(template)?;
+    Ok(expand(&config, &template)?)
 }
 
-/// Concatenates a command prefix with generated arguments, matching the argv
+/// Concatenates a command prefix with expanded arguments, matching the argv
 /// `execute` spawns.
-pub fn full_argv(prefix: &[OsString], generated: &[String]) -> Vec<String> {
+pub fn full_argv(prefix: &[OsString], expanded: &[String]) -> Vec<String> {
     prefix
         .iter()
         .map(|argument| argument.to_string_lossy().into_owned())
-        .chain(generated.iter().cloned())
+        .chain(expanded.iter().cloned())
         .collect()
 }
 

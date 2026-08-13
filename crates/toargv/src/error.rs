@@ -6,7 +6,7 @@ use thiserror::Error;
 /// A configuration, grammar, rendering, or execution failure.
 #[derive(Debug, Error)]
 pub enum Error {
-    /// A configuration or grammar file could not be read.
+    /// A configuration file could not be read.
     #[error("failed to read `{path}`: {source}")]
     Read {
         /// Path that could not be read.
@@ -31,29 +31,9 @@ pub enum Error {
         message: String,
     },
 
-    /// A grammar file could not be decoded.
-    #[error("failed to parse grammar `{path}`: {message}")]
-    ParseGrammar {
-        /// Path to the invalid grammar.
-        path: PathBuf,
-        /// Codec error message.
-        message: String,
-    },
-
-    /// An inline grammar argument could not be decoded.
-    #[error("failed to parse inline grammar: {message}")]
-    ParseInlineGrammar {
-        /// Codec error message.
-        message: String,
-    },
-
-    /// No grammar file or inline grammar was supplied.
-    #[error("at least one -f/--grammar-file or -g/--grammar source is required")]
-    MissingGrammar,
-
-    /// Grammar validation or argument generation failed.
+    /// Template validation or argument expansion failed.
     #[error(transparent)]
-    Grammar(#[from] toargv_grammar::Error),
+    Template(#[from] toargv_template::Error),
 
     /// A child process could not be started.
     #[error("failed to execute `{program}`: {source}")]

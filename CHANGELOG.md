@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Replace grammar files, inline grammars, and layering with passthrough argv
+  templates supporting interpolation, defaults, array spread, conditional
+  options, and repeated option/value pairs.
+- Replace trailing-command execution with `--exec PROGRAM -- TEMPLATE...`.
+- Rename the pure `toargv-grammar` crate to `toargv-template`.
+
+### Removed
+
+- Remove the bracket grammar, grammar codecs, `-f/--grammar-file`,
+  `-g/--grammar`, join/count actions, and TextMate grammar.
+
 ## [0.1.0] - 2026-08-13
 
 ### Added

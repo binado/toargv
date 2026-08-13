@@ -1,15 +1,15 @@
 [package]
-name = "toargv-grammar"
-description = "Grammar model, codec, and argument emitter for toargv"
+name = "toargv-template"
+description = "Argument template parser and expander for toargv"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-documentation = "https://docs.rs/toargv-grammar"
+documentation = "https://docs.rs/toargv-template"
 readme = "README.md"
-keywords = ["cli", "configuration", "arguments", "grammar", "parser"]
+keywords = ["cli", "configuration", "arguments", "template", "parser"]
 categories = ["command-line-utilities", "config", "parser-implementations"]
 
 [dependencies]

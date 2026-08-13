@@ -2,7 +2,6 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{Map, Number, Value};
-use toargv_grammar::{Grammar, GrammarCodec, InlineCodec};
 
 use crate::Error;
 
@@ -28,30 +27,6 @@ pub fn load_config(path: &Path) -> Result<Value, Error> {
         }
         _ => Err(Error::UnsupportedConfigFormat(path.to_owned())),
     }
-}
-
-/// Loads and decodes a file containing inline grammar syntax.
-pub fn load_grammar(path: &Path) -> Result<Grammar, Error> {
-    let contents = read(path)?;
-    InlineCodec
-        .decode(&contents)
-        .map_err(|error| Error::ParseGrammar {
-            path: path.to_owned(),
-            message: error.to_string(),
-        })
-}
-
-/// Decodes inline grammar syntax supplied directly by a caller.
-pub fn load_inline_grammar(source: &str) -> Result<Grammar, Error> {
-    let source = source.trim();
-    InlineCodec.decode(source).map_err(|error| {
-        let message = if source.starts_with(['[', '<']) {
-            error.to_string()
-        } else {
-            format!("{error}; if this is a grammar file, use -f/--grammar-file")
-        };
-        Error::ParseInlineGrammar { message }
-    })
 }
 
 fn read(path: &Path) -> Result<String, Error> {

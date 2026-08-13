@@ -1,48 +1,38 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Parser};
+use clap::Parser;
 
 /// Parsed `toargv` command-line arguments.
 #[derive(Debug, Parser)]
 #[command(
     name = "toargv",
     version,
-    about = "Translate configuration values into command-line arguments",
-    group(
-        ArgGroup::new("grammars")
-            .required(true)
-            .multiple(true)
-            .args(["grammar_file", "grammar"])
-    )
+    about = "Expand configuration values into an argument template"
 )]
 pub struct Cli {
     /// TOML or JSON configuration file
     pub config: PathBuf,
 
-    /// Grammar file in inline syntax; repeat to layer files left to right
-    #[arg(short = 'f', long = "grammar-file", value_name = "PATH")]
-    pub grammar_file: Vec<PathBuf>,
-
-    /// Inline grammar; repeat to layer inlines left to right, after all files
-    #[arg(short = 'g', long = "grammar", value_name = "GRAMMAR")]
-    pub grammar: Vec<String>,
-
-    /// Check that the configuration can be translated, printing nothing
-    #[arg(long, conflicts_with_all = ["json", "dry_run", "command"])]
+    /// Check that the template can be expanded, printing nothing
+    #[arg(long, conflicts_with_all = ["json", "dry_run", "exec"])]
     pub check: bool,
 
-    /// Print generated arguments as a compact JSON array
+    /// Print expanded arguments as a compact JSON array
     #[arg(long)]
     pub json: bool,
 
-    /// Print the command instead of running it
-    #[arg(short = 'n', long, requires = "command")]
+    /// Program to execute with the expanded arguments
+    #[arg(long, value_name = "PROGRAM")]
+    pub exec: Option<OsString>,
+
+    /// Print the expanded command instead of running it
+    #[arg(short = 'n', long, requires = "exec")]
     pub dry_run: bool,
 
-    /// Command and fixed arguments to execute
-    #[arg(last = true, num_args = 1.., value_name = "COMMAND")]
-    pub command: Vec<OsString>,
+    /// Literal arguments and configuration placeholders to expand
+    #[arg(last = true, value_name = "TEMPLATE")]
+    pub template: Vec<String>,
 }
 
 /// How printed arguments are quoted.
@@ -57,20 +47,19 @@ pub enum Format {
 /// What a parsed invocation asks for, with the flag combinations already resolved.
 #[derive(Debug)]
 pub enum Mode<'a> {
-    /// Validate argument generation without producing output.
+    /// Validate template expansion without producing output.
     Check,
-    /// Render generated arguments without executing a process.
+    /// Render expanded arguments without executing a process.
     Print {
-        /// Program and fixed arguments to print ahead of the generated ones; empty
-        /// unless this is a dry run.
-        prefix: &'a [OsString],
+        /// Program to print ahead of the expanded arguments for a dry run.
+        program: Option<&'a OsString>,
         /// Output representation.
         format: Format,
     },
-    /// Execute a command with generated arguments appended.
+    /// Execute a command with expanded arguments appended.
     Exec {
-        /// Program and fixed argument prefix.
-        command: &'a [OsString],
+        /// Program receiving the expanded arguments.
+        program: &'a OsString,
     },
 }
 
@@ -81,14 +70,22 @@ impl Cli {
             return Mode::Check;
         }
 
-        if !self.command.is_empty() && !self.dry_run {
-            return Mode::Exec {
-                command: &self.command,
-            };
+        if let Some(program) = &self.exec
+            && !self.dry_run
+        {
+            return Mode::Exec { program };
         }
 
         Mode::Print {
-            prefix: if self.dry_run { &self.command } else { &[] },
+            program: if self.dry_run {
+                Some(
+                    self.exec
+                        .as_ref()
+                        .expect("clap requires --exec when --dry-run is present"),
+                )
+            } else {
+                None
+            },
             format: if self.json {
                 Format::Json
             } else {

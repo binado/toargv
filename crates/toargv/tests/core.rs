@@ -1,9 +1,8 @@
 use std::fs;
 
 use tempfile::tempdir;
-use toargv::grammar::Rule;
-use toargv::load::{load_config, load_grammar, load_inline_grammar};
-use toargv::{Error, render_shell};
+use toargv::load::load_config;
+use toargv::{Error, build_arguments, render_shell};
 
 fn shell(arguments: &[&str]) -> String {
     let owned: Vec<String> = arguments.iter().map(|value| value.to_string()).collect();
@@ -11,41 +10,15 @@ fn shell(arguments: &[&str]) -> String {
 }
 
 #[test]
-fn loads_inline_grammar_file() {
+fn loads_a_config_and_expands_a_template() {
     let directory = tempdir().unwrap();
-    let path = directory.path().join("grammar.grm");
-    fs::write(&path, "[-o output]\n<input>\n").unwrap();
+    let path = directory.path().join("config.toml");
+    fs::write(&path, "output = \"result.txt\"\n").unwrap();
 
-    let grammar = load_grammar(&path).unwrap();
+    let arguments =
+        build_arguments(&path, &["--output".to_owned(), "{output}".to_owned()]).unwrap();
 
-    assert_eq!(grammar.rules().len(), 2);
-    assert!(matches!(grammar.rules()[0], Rule::Named { .. }));
-    assert!(matches!(grammar.rules()[1], Rule::Positional { .. }));
-}
-
-#[test]
-fn loads_inline_grammar() {
-    let grammar = load_inline_grammar("  [-o output] <input>  ").unwrap();
-
-    assert_eq!(grammar.rules().len(), 2);
-}
-
-#[test]
-fn inline_grammar_path_errors_hint_at_grammar_file() {
-    let error = load_inline_grammar("grammar.toml").unwrap_err().to_string();
-
-    assert!(error.contains("-f/--grammar-file"));
-}
-
-#[test]
-fn grammar_file_parse_errors_include_the_file_path() {
-    let directory = tempdir().unwrap();
-    let path = directory.path().join("broken.grm");
-    fs::write(&path, "[--output\n").unwrap();
-
-    let error = load_grammar(&path).unwrap_err().to_string();
-
-    assert!(error.contains(path.to_str().unwrap()));
+    assert_eq!(arguments, ["--output", "result.txt"]);
 }
 
 #[test]

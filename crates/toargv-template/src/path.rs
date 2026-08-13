@@ -16,16 +16,18 @@ impl ConfigPath {
     /// Parses a nonempty dotted path with no empty segments.
     pub fn parse(path: &str) -> Result<Self, Error> {
         if path.is_empty() {
-            return Err(Error::InvalidGrammar(
-                "configuration paths cannot be empty".to_owned(),
-            ));
+            return Err(Error::InvalidPath {
+                path: path.to_owned(),
+                message: "paths cannot be empty".to_owned(),
+            });
         }
 
         let segments: Vec<_> = path.split('.').map(str::to_owned).collect();
         if segments.iter().any(String::is_empty) {
-            return Err(Error::InvalidGrammar(format!(
-                "configuration path `{path}` contains an empty segment"
-            )));
+            return Err(Error::InvalidPath {
+                path: path.to_owned(),
+                message: "paths cannot contain empty segments".to_owned(),
+            });
         }
 
         Ok(Self {
