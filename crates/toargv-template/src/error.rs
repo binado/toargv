@@ -24,7 +24,7 @@ pub enum Error {
     },
 
     /// A strict placeholder's configuration path is missing or null.
-    #[error("configuration path `{path}` was not found for template argument {argument}")]
+    #[error("configuration path `{path}` was not found")]
     MissingValue {
         /// The unresolved dotted configuration path.
         path: String,
@@ -33,9 +33,7 @@ pub enum Error {
     },
 
     /// A configuration value is incompatible with its placeholder.
-    #[error(
-        "cannot expand template argument {argument} from configuration path `{path}`: {message}"
-    )]
+    #[error("cannot expand configuration path `{path}`: {message}")]
     Expansion {
         /// One-based position in the template argument vector.
         argument: usize,

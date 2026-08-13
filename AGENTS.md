@@ -71,8 +71,9 @@ not false, zero, or empty values. Spread/repeat require arrays of scalars;
 conditionals require booleans; objects are never emitted.
 
 Parsing errors carry a one-based template argument and byte offset. Expansion
-errors carry the argument and config path. Preserve those diagnostics when adding
-syntax.
+errors carry the argument and config path in the structured error; user-facing
+messages identify the path, not the template-argument index. Preserve those
+diagnostics when adding syntax.
 
 **Adding a placeholder form means touching four places:** `template.rs` (model and
 parser), `expand.rs`, integration tests, and README syntax documentation. Keep

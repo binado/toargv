@@ -145,6 +145,10 @@ fn missing_values_are_strict_for_every_non_default_form() {
                 ref path
             } if path == "missing"
         ));
+        assert_eq!(
+            error.to_string(),
+            "configuration path `missing` was not found"
+        );
     }
 }
 
@@ -162,6 +166,10 @@ fn rejects_values_incompatible_with_placeholder_forms() {
             .unwrap_err()
             .to_string();
         assert!(error.contains(expected), "{input}: {error}");
+        assert!(
+            error.starts_with("cannot expand configuration path `value`:"),
+            "{input}: {error}"
+        );
     }
 }
 

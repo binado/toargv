@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Drop template-argument indexes from missing-value and type-expansion error
+  messages. The configuration path already identifies the placeholder.
 - Replace grammar files, inline grammars, and layering with passthrough argv
   templates supporting interpolation, defaults, array spread, conditional
   options, and repeated option/value pairs.
