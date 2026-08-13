@@ -1,0 +1,17 @@
+[package]
+name = "toargv-grammar"
+description = "Grammar model, codec, and argument emitter for toargv"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/toargv-grammar"
+readme = "README.md"
+keywords = ["cli", "configuration", "arguments", "grammar", "parser"]
+categories = ["command-line-utilities", "config", "parser-implementations"]
+
+[dependencies]
+serde_json = "1.0"
+thiserror = "2.0"
