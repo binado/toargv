@@ -1,0 +1,24 @@
+[workspace]
+# Publish only after the release PR is merged, so version bumps and the
+# changelog can be reviewed first.
+release_always = false
+# Keep Cargo.lock churn out of release PRs; CI already verifies `--locked`.
+dependencies_update = false
+# Tag and GitHub-release only the CLI crate. Both packages still publish.
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "toargv"
+version_group = "toargv"
+changelog_path = "CHANGELOG.md"
+changelog_include = ["toargv-template"]
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+git_release_name = "v{{ version }}"
+
+[[package]]
+name = "toargv-template"
+version_group = "toargv"
+changelog_update = false
