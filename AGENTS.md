@@ -22,7 +22,7 @@ cargo run -p toargv -- config.toml -- --output '{output}'
 Pre-commit hooks are managed by [prek](https://github.com/j178/prek) (`prek.toml`, not
 `.pre-commit-config.yaml`): `prek run --all-files` runs the fmt and clippy hooks above.
 
-Rust edition 2024 with an MSRV of Rust 1.85.
+Rust edition 2024 with an MSRV of Rust 1.88.
 
 ## Architecture
 
