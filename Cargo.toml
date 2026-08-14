@@ -3,7 +3,7 @@ members = ["crates/toargv", "crates/toargv-template"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -11,4 +11,4 @@ repository = "https://github.com/binado/toargv"
 homepage = "https://github.com/binado/toargv"
 
 [workspace.dependencies]
-toargv-template = { version = "0.1.0", path = "crates/toargv-template" }
+toargv-template = { version = "0.1.1", path = "crates/toargv-template" }

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/binado/toargv/compare/v0.1.0...v0.1.1) - 2026-08-14
+
+### Other
+
+- bump shlex to 2.0 ([#5](https://github.com/binado/toargv/pull/5))
+
 ### Changed
 
 - Raise the MSRV from 1.85 to 1.88 so let-chains in `if` conditions compile.
