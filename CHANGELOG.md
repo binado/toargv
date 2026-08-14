@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Raise the MSRV from 1.85 to 1.88 so let-chains in `if` conditions compile.
 - Drop template-argument indexes from missing-value and type-expansion error
   messages. The configuration path already identifies the placeholder.
 - Replace grammar files, inline grammars, and layering with passthrough argv
