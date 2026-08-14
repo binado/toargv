@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/binado/toargv/compare/v0.1.1...v0.1.2) - 2026-08-14
+
+### Other
+
+- bump toml to 1.0 ([#7](https://github.com/binado/toargv/pull/7))
+
 ## [0.1.1](https://github.com/binado/toargv/compare/v0.1.0...v0.1.1) - 2026-08-14
 
 ### Other
