@@ -35,6 +35,10 @@ pub struct Cli {
     pub template: Option<String>,
 
     /// jq filters for template slots, or `NAME=FILTER` bindings for named slots
+    ///
+    /// Deliberately without `allow_hyphen_values`: on a trailing variadic
+    /// positional it would swallow `-0`, `-c`, `-e`, and `-n` written after the
+    /// template. Filters starting with `-` go after `--`.
     #[arg(value_name = "FILTER")]
     pub filters: Vec<String>,
 }

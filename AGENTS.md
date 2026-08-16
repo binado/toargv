@@ -56,7 +56,11 @@ non-finite floats are errors). Config format is selected by case-sensitive
 ### The template model
 
 The template is **a single string**, split into words by a POSIX-shaped lexer
-(`'..'`/`".."` quoting, backslash escapes, `{{`/`}}` literal braces). Words
+(`'..'`/`".."` quoting, backslash escapes, `{{`/`}}` literal braces). Quoting
+governs **word splitting only**: braces keep their slot meaning inside quotes
+of either kind, so `{{`/`}}` is the only way to write a literal brace. Every
+content-producing lexer arm must set `word_started`, including the backslash
+arms — a word built solely from escapes is still a word. Words
 contain literal text and slots: `{}` (next positional filter), `{N}` (Nth
 positional), or `{name}` (a `NAME=FILTER` binding argument). Positional and
 named slot styles cannot be mixed (parse error). A filter argument is a
@@ -121,6 +125,14 @@ An empty or omitted template is valid.
   a NUL byte. NUL cannot occur inside an OS argument, so the encoding is
   lossless without a quoting grammar; arguments containing NUL themselves fail
   with `Error::NulByte`.
+- **Both print modes write through `write_stdout`.** A closed reader (`| head`,
+  an aborting `xargs -0`) is routine for a pipeline tool, so `BrokenPipe` exits
+  0 silently. Never write to stdout with `println!` or `.expect(..)`, which
+  turn a normal broken pipe into a panic and exit 101.
+
+`filters` must not gain `allow_hyphen_values`. On a trailing variadic
+positional it swallows `-0`, `-c`, `-e`, and `-n` written after the template;
+filters starting with `-` go after `--`.
 
 `full_argv` and `execute` must remain in step for dry-run output.
 

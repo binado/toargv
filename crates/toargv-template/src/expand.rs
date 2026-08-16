@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use jaq_json::Val;
 use serde_json::Value;
@@ -21,7 +21,8 @@ pub fn expand(
     let mut positional: Vec<&Filter> = Vec::new();
     let mut positional_arguments: Vec<usize> = Vec::new();
     let mut named: HashMap<&str, &Filter> = HashMap::new();
-    let mut named_arguments: HashMap<&str, usize> = HashMap::new();
+    // Ordered so that diagnostics list names and blame arguments deterministically.
+    let mut named_arguments: BTreeMap<&str, usize> = BTreeMap::new();
 
     for (index, filter) in filters.iter().enumerate() {
         let argument = index + 1;
@@ -115,11 +116,18 @@ pub fn expand(
             });
         }
     }
-    for (name, argument) in &named_arguments {
-        let label = SlotLabel::Named((*name).to_owned());
+    // Sorted by argument so the earliest unreferenced binding is blamed, matching
+    // the positional branch above.
+    let mut unreferenced: Vec<(&str, usize)> = named_arguments
+        .iter()
+        .map(|(name, argument)| (*name, *argument))
+        .collect();
+    unreferenced.sort_by_key(|(_, argument)| *argument);
+    for (name, argument) in unreferenced {
+        let label = SlotLabel::Named(name.to_owned());
         if !referenced_labels.contains(&label) {
             return Err(Error::Binding {
-                argument: *argument,
+                argument,
                 message: format!("filter bound to `{name}` is not referenced by any template slot"),
             });
         }

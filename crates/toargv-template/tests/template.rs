@@ -50,6 +50,27 @@ fn double_quotes_only_escape_quotes_and_backslashes() {
 }
 
 #[test]
+fn escaped_characters_start_a_word_on_their_own() {
+    let config = json!({});
+    // An escape is word-forming: a word built only from escapes must survive
+    // splitting instead of merging into the next word or vanishing.
+    assert_eq!(run(r"\a foo", &config, &[]).unwrap(), ["a", "foo"]);
+    assert_eq!(run(r"\a \b", &config, &[]).unwrap(), ["a", "b"]);
+    assert_eq!(run(r"x \{ y", &config, &[]).unwrap(), ["x", "{", "y"]);
+    assert_eq!(run(r#""\\" z"#, &config, &[]).unwrap(), ["\\", "z"]);
+}
+
+#[test]
+fn quotes_do_not_suppress_slot_interpolation() {
+    let config = json!({"a": "value"});
+    // Quoting governs word splitting only; braces keep their meaning inside
+    // quotes of either kind, so a literal brace always needs doubling.
+    assert_eq!(run("'{}'", &config, &[".a"]).unwrap(), ["value"]);
+    assert_eq!(run(r#""{}""#, &config, &[".a"]).unwrap(), ["value"]);
+    assert_eq!(run("'{{}}'", &config, &[]).unwrap(), ["{}"]);
+}
+
+#[test]
 fn doubled_braces_emit_literal_braces() {
     let config = json!({});
     assert_eq!(
@@ -304,6 +325,54 @@ fn unknown_and_unused_filters_are_rejected() {
         panic!("expected unused-filter error");
     };
     assert_eq!(argument, 2);
+}
+
+#[test]
+fn binding_diagnostics_are_deterministic() {
+    let config = json!({});
+
+    // The earliest unreferenced binding is blamed, matching the positional
+    // branch, rather than whichever one a hash map happens to yield first.
+    for _ in 0..32 {
+        let Err(Error::Binding { argument, .. }) =
+            run("{a}", &config, &["a=.a", "b=.b", "c=.c", "d=.d"])
+        else {
+            panic!("expected unused-binding error");
+        };
+        assert_eq!(argument, 2);
+    }
+
+    // The "available" hint is sorted by name.
+    for _ in 0..32 {
+        let Err(Error::Expansion { message, .. }) = run("{zz}", &config, &["a=.a", "m=.m", "b=.b"])
+        else {
+            panic!("expected unknown-binding error");
+        };
+        assert!(message.contains("`a`, `b`, `m`"), "got: {message}");
+    }
+}
+
+#[test]
+fn jq_compile_errors_are_readable() {
+    let config = json!({});
+
+    let Err(Error::Compile { message, .. }) = run("{}", &config, &["nosuchfn"]) else {
+        panic!("expected compile error");
+    };
+    assert_eq!(message, "undefined filter `nosuchfn`");
+
+    let Err(Error::Compile { message, .. }) = run("{}", &config, &[".foo ("]) else {
+        panic!("expected compile error");
+    };
+    assert!(
+        message.contains("expected closing parenthesis"),
+        "got: {message}"
+    );
+    // Diagnostics carry a position and must not leak jaq's internal types.
+    assert!(
+        !message.contains("File {") && !message.contains("Parse(["),
+        "message leaks jaq internals: {message}"
+    );
 }
 
 #[test]

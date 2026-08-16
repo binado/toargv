@@ -68,10 +68,15 @@ extension; TOML datetimes become strings.
 
 ## Template syntax
 
-The template is split into **words** by whitespace. Quoting follows POSIX
-shell rules: `'single quotes'` are literal, `"double quotes"` are literal
-except `\"` and `\\`, and a backslash outside quotes escapes the next
-character. `{{` and `}}` emit literal braces. Everything else is a slot:
+The template is split into **words** by whitespace. Quoting controls word
+splitting and follows POSIX shell rules: `'single quotes'` are literal,
+`"double quotes"` are literal except `\"` and `\\`, and a backslash outside
+quotes escapes the next character.
+
+Unlike a shell, quoting does **not** turn off slot interpolation — `{` and `}`
+keep their meaning everywhere, so `'{}'` is a slot, not a literal pair of
+braces. Write `{{` and `}}` for literal braces, inside quotes as well as
+outside. Everything else is a slot:
 
 | Slot | Refers to |
 | --- | --- |
@@ -134,6 +139,9 @@ $ toargv -0 config.json '--name {}' '.name' | xargs -0 some-program
 
 This is exact for arguments containing spaces, quotes, or newlines. `--exec`
 is even stronger: it passes argv in memory, with no serialization at all.
+
+If the reader closes the pipe early — `| head`, or an `xargs -0` that stops on
+an error — `toargv` exits 0 without an error, like any other pipeline tool.
 
 ## Migration from 0.1.x
 
