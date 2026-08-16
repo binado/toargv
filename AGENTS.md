@@ -12,11 +12,11 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 
 # single test / single file
-cargo test -p toargv --test cli renders_interpolated_arguments
+cargo test -p toargv --test cli renders_positional_slots_in_template_order
 cargo test -p toargv-template --test template
 
 # run the CLI without installing
-cargo run -p toargv -- config.toml -- --output '{output}'
+cargo run -p toargv -- config.toml '--output {}' '.output'
 ```
 
 Pre-commit hooks are managed by [prek](https://github.com/j178/prek) (`prek.toml`, not
@@ -29,9 +29,12 @@ Rust edition 2024 with an MSRV of Rust 1.88.
 Two crates, split by whether they touch the outside world:
 
 - **`crates/toargv-template`** — pure library. No filesystem or process spawning. Owns
-  the template model/parser, config-path resolver, and argv expander.
+  the template lexer/model, the jq engine adapter, and the argv expander. Its jq
+  evaluation runs through [jaq](https://github.com/01mf02/jaq) crates
+  (`jaq-core`, `jaq-std`, `jaq-json` with the `serde` feature); pin `jaq-json`
+  exactly and keep `jaq-core`/`jaq-std` within the versions it depends on.
 - **`crates/toargv`** — CLI plus I/O: config loading, format detection, `Command`
-  spawning, exit-code mapping, and shell/JSON rendering. Re-exports the template
+  spawning, exit-code mapping, and shell/NUL rendering. Re-exports the template
   library so callers see one surface.
 
 ### The pipeline
@@ -39,9 +42,10 @@ Two crates, split by whether they touch the outside world:
 `build_arguments` (`crates/toargv/src/lib.rs`) is the whole program:
 
 ```text
-config file ──load_config──▶ serde_json::Value ─┐
-                                                ├──expand──▶ argv
-args after -- ──Template::parse──▶ Template ────┘
+config file ──load_config──▶ serde_json::Value ──────────┐
+                                                         ├──expand──▶ argv
+TEMPLATE string ──Template::parse──▶ Template            │
+FILTER args ──Filter::parse──▶ [Filter] ─────────────────┘
 ```
 
 Everything downstream of loading operates on `serde_json::Value`, including TOML
@@ -51,55 +55,58 @@ non-finite floats are errors). Config format is selected by case-sensitive
 
 ### The template model
 
-`Template` is an ordered vector with private parsed argument nodes. Parse every
-template argument before expansion so malformed templates cannot be constructed
-through the public API. Each argument is one of:
+The template is **a single string**, split into words by a POSIX-shaped lexer
+(`'..'`/`".."` quoting, backslash escapes, `{{`/`}}` literal braces). Words
+contain literal text and slots: `{}` (next positional filter), `{N}` (Nth
+positional), or `{name}` (a `NAME=FILTER` binding argument). Positional and
+named slot styles cannot be mixed (parse error). A filter argument is a
+binding iff it matches `^[A-Za-z_][A-Za-z0-9_]*=`; everything else is a
+positional jq program handed to jaq verbatim — jq source never appears inside
+the template string, so filter bytes (braces, strings, comments) need no
+escaping grammar.
 
-- interpolated literal/scalar parts (`{path}`, `{path:-default}`);
-- array spread (`{path...}`);
-- conditional option (`{?path:-v}`); or
-- repeated option/value pairs (`{*path:--file}`).
+Cardinality rules mirror the word structure:
 
-Scalar/default placeholders may be embedded and never change the containing
-argument's boundary. Spread, conditional, and repeat placeholders must occupy a
-whole argument because they can emit zero or multiple argv entries. `{{` and `}}`
-emit literal braces.
+- a slot *embedded* in a word requires its filter to yield exactly one scalar;
+- a word that is exactly one slot flattens 0..N filter values into argv.
 
-Paths are raw dotted paths with no array indexing or dot escaping. Missing/null
-values are strict except for scalar defaults. Defaults replace only missing/null,
-not false, zero, or empty values. Spread/repeat require arrays of scalars;
-conditionals require booleans; objects are never emitted.
+Every emitted value passes the `scalar()` gate in `expand.rs`: strings
+verbatim, numbers/bools stringified, null/array/object rejected — strictness
+on missing keys emerges from jq producing `null`, not from a special case.
+Each filter is compiled and evaluated **once** regardless of reuse, via
+`jq.rs`; a filter may yield at most `MAX_OUTPUT_VALUES` (100k) values, which
+bounds runaway programs like unbounded recursion.
 
-Parsing errors carry a one-based template argument and byte offset. Expansion
-errors carry the argument and config path in the structured error; user-facing
-messages identify the path, not the template-argument index. Preserve those
-diagnostics when adding syntax.
-
-**Adding a placeholder form means touching four places:** `template.rs` (model and
-parser), `expand.rs`, integration tests, and README syntax documentation. Keep
-model fields private and expansion matches exhaustive.
+Validation happens before evaluation: unknown slot references, unused filter
+arguments, duplicate binding names, and out-of-range indexes are all hard
+errors. Diagnostics identify slots (`slot 2`, `slot {output}`), template words
+(one-based), byte offsets (parse errors), or filter argument positions
+(binding errors) — preserve that specificity when adding syntax.
 
 ### The CLI surface
 
 One flat command, no subcommands (`cli.rs`):
 
 ```text
-toargv <CONFIG> [--check] [-n] [--exec <PROGRAM>] -- [TEMPLATE]...
+toargv <CONFIG> [TEMPLATE] [FILTER]... [-0 | -c | -e PROGRAM [-n]]
 ```
 
-`--` is the only template separator. Clap must not consume child/template flags
-after it. `--exec` consumes exactly one program; fixed child arguments belong to
-the template. This avoids a greedy executable option swallowing toargv's flags.
+`template` uses clap's `allow_hyphen_values` so templates beginning with `-x`
+words need no separator; defined flags (`-0/-c/-e/-n`) still win, so `--`
+remains the escape for colliding values. `--exec` consumes exactly one
+program; fixed child arguments (e.g. `-c 'script'`) belong to the template
+string.
 
 All behaviors call `build_arguments` once, then use `Cli::mode`:
 
 - default print expands argv as shell syntax;
+- `-0 --print0` expands argv as NUL-separated bytes;
 - `--check` expands silently;
 - `--exec PROGRAM` spawns the program with expanded argv;
 - `-n --exec PROGRAM` prints the full command instead.
 
 Do not re-read raw CLI booleans in `main.rs`; resolve combinations in `Cli::mode`.
-An empty template is valid.
+An empty or omitted template is valid.
 
 ### Output modes and the shell
 
@@ -110,19 +117,24 @@ An empty template is valid.
   argument with `shlex::try_quote`. Use only the `try_*` API; deprecated plain
   quoting APIs have security issues. Per-argument quoting lets
   `Error::Unquotable` identify values containing NUL.
+- **print0 is the machine format.** `render_nul` terminates every argument with
+  a NUL byte. NUL cannot occur inside an OS argument, so the encoding is
+  lossless without a quoting grammar; arguments containing NUL themselves fail
+  with `Error::NulByte`.
 
 `full_argv` and `execute` must remain in step for dry-run output.
 
 ## Testing conventions
 
 Tests are integration tests under `tests/`, not `#[cfg(test)]` modules in `src/`.
-Pure tests cover parsing and expansion through public APIs. CLI tests spawn the
-real binary with `env!(\"CARGO_BIN_EXE_toargv\")` and tempfile configs, covering
-argv boundaries, output, errors, exit statuses, and clap separation.
+Pure tests cover lexing, slot resolution, cardinality, scalar gating, and jq
+error propagation through public APIs. CLI tests spawn the real binary with
+`env!(\"CARGO_BIN_EXE_toargv\")` and tempfile configs, covering argv boundaries,
+output bytes, errors, exit statuses, and clap separation.
 
 ## Documentation
 
 `README.md` is the user-facing template and CLI specification. Any syntax,
-missing-value, type, argv-boundary, or execution behavior change requires a
+cardinality, type, argv-boundary, or execution behavior change requires a
 matching README update.
 </coding_guidelines>

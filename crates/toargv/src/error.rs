@@ -52,4 +52,8 @@ pub enum Error {
     /// An argument cannot be represented as safe shell syntax.
     #[error("argument cannot be represented in shell syntax: {0:?}")]
     Unquotable(String),
+
+    /// An argument contains a NUL byte and cannot be NUL-separated.
+    #[error("argument contains a NUL byte and cannot be NUL-separated: {0:?}")]
+    NulByte(String),
 }

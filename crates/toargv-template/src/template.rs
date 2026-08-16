@@ -1,242 +1,177 @@
-use crate::{ConfigPath, Error};
+use crate::Error;
 
-/// A validated, ordered argv template.
+/// A validated template string alongside its slot references.
+///
+/// The template is split into words by whitespace outside quotes. Words map
+/// to one argument each, except words consisting of exactly one slot, which
+/// may expand to any number of arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Template {
-    pub(crate) arguments: Vec<Argument>,
-}
-
-impl Template {
-    /// Parses template arguments while preserving their order and boundaries.
-    pub fn parse(arguments: &[String]) -> Result<Self, Error> {
-        arguments
-            .iter()
-            .enumerate()
-            .map(|(index, argument)| parse_argument(argument, index + 1))
-            .collect::<Result<_, _>>()
-            .map(|arguments| Self { arguments })
-    }
-
-    /// Returns the number of template arguments.
-    pub fn len(&self) -> usize {
-        self.arguments.len()
-    }
-
-    /// Returns whether the template has no arguments.
-    pub fn is_empty(&self) -> bool {
-        self.arguments.is_empty()
-    }
+    pub(crate) words: Vec<Word>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Argument {
-    Interpolated(Vec<Part>),
-    Spread { source: ConfigPath },
-    Conditional { source: ConfigPath, option: String },
-    Repeat { source: ConfigPath, option: String },
+pub(crate) struct Word {
+    /// One-based position within the template.
+    pub index: usize,
+    pub parts: Vec<Part>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Part {
     Literal(String),
-    Value {
-        source: ConfigPath,
-        default: Option<String>,
-    },
+    Slot(SlotRef),
 }
 
-enum Expression {
-    Value {
-        source: ConfigPath,
-        default: Option<String>,
-    },
-    Spread {
-        source: ConfigPath,
-    },
-    Conditional {
-        source: ConfigPath,
-        option: String,
-    },
-    Repeat {
-        source: ConfigPath,
-        option: String,
-    },
+/// An unresolved slot reference as written in the template.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SlotRef {
+    /// `{}`, consuming the next positional filter in order.
+    Next,
+    /// `{N}`, referring to the Nth positional filter (one-based).
+    Index(usize),
+    /// `{name}`, referring to a `name=FILTER` argument.
+    Name(String),
 }
 
-fn parse_argument(input: &str, argument: usize) -> Result<Argument, Error> {
-    let mut parts = Vec::new();
-    let mut literal = String::new();
-    let mut offset = 0;
+impl Template {
+    /// Parses a template string into words with resolved quoting and slots.
+    ///
+    /// Quoting follows POSIX shell word rules: single quotes are literal,
+    /// double quotes escape `\` and `"` with a backslash, and a backslash
+    /// outside quotes escapes the next character. `{{` and `}}` emit literal
+    /// braces. Positional (`{}`, `{N}`) and named (`{name}`) slots cannot be
+    /// mixed within one template.
+    pub fn parse(input: &str) -> Result<Self, Error> {
+        let mut words = Vec::new();
+        let mut parts = Vec::new();
+        let mut literal = String::new();
+        let mut word_started = false;
+        let mut quote: Option<char> = None;
+        let mut positional_offset: Option<usize> = None;
+        let mut named_offset: Option<usize> = None;
 
-    while offset < input.len() {
-        let rest = &input[offset..];
-        if rest.starts_with("{{") {
-            literal.push('{');
-            offset += 2;
-            continue;
-        }
-        if rest.starts_with("}}") {
-            literal.push('}');
-            offset += 2;
-            continue;
-        }
+        let mut chars = input.char_indices().peekable();
+        while let Some((offset, character)) = chars.next() {
+            if let Some(closing) = quote
+                && character == closing
+            {
+                quote = None;
+                continue;
+            }
 
-        let character = rest
-            .chars()
-            .next()
-            .expect("offset remains within the argument");
-        match character {
-            '{' => {
-                push_literal(&mut parts, &mut literal);
-                let body_start = offset + 1;
-                let closing = input[body_start..]
-                    .find('}')
-                    .map(|relative| body_start + relative)
-                    .ok_or_else(|| parse_error(argument, offset, "missing closing `}`"))?;
-                let body = &input[body_start..closing];
-                if body.contains('{') {
+            match (quote, character) {
+                (None, ' ' | '\t' | '\n' | '\r') => {
+                    if word_started {
+                        end_word(&mut words, &mut parts, &mut literal);
+                        word_started = false;
+                    }
+                }
+                (None, '\'' | '"') => {
+                    quote = Some(character);
+                    word_started = true;
+                }
+                (Some('"'), '\\') => match chars.peek().copied() {
+                    Some((_, '"' | '\\')) => {
+                        literal.push(chars.next().expect("peeked").1);
+                    }
+                    _ => literal.push('\\'),
+                },
+                (None, '\\') => match chars.next() {
+                    Some((_, escaped)) => literal.push(escaped),
+                    None => literal.push('\\'),
+                },
+                (_, '{') => {
+                    if matches!(chars.peek(), Some((_, '{'))) {
+                        chars.next();
+                        literal.push('{');
+                        word_started = true;
+                        continue;
+                    }
+                    let slot = parse_slot(&mut chars, offset)?;
+                    match &slot {
+                        SlotRef::Next | SlotRef::Index(_) => {
+                            if let Some(named) = named_offset {
+                                return Err(parse_error(
+                                    named,
+                                    "named and positional slots cannot be mixed",
+                                ));
+                            }
+                            positional_offset.get_or_insert(offset);
+                        }
+                        SlotRef::Name(_) => {
+                            if let Some(positional) = positional_offset {
+                                return Err(parse_error(
+                                    positional,
+                                    "named and positional slots cannot be mixed",
+                                ));
+                            }
+                            named_offset.get_or_insert(offset);
+                        }
+                    }
+                    push_literal(&mut parts, &mut literal);
+                    parts.push(Part::Slot(slot));
+                    word_started = true;
+                }
+                (_, '}') => {
+                    if matches!(chars.peek(), Some((_, '}'))) {
+                        chars.next();
+                        literal.push('}');
+                        word_started = true;
+                        continue;
+                    }
                     return Err(parse_error(
-                        argument,
                         offset,
-                        "nested `{` is not allowed inside a placeholder",
+                        "unmatched `}`; write `}}` for a literal brace",
                     ));
                 }
-                let expression = parse_expression(body, argument, offset)?;
-                parts.push(match expression {
-                    Expression::Value { source, default } => Part::Value { source, default },
-                    directive => {
-                        if !parts.is_empty() || closing + 1 != input.len() {
-                            return Err(parse_error(
-                                argument,
-                                offset,
-                                "spread, conditional, and repeat placeholders must occupy the entire argument",
-                            ));
-                        }
-                        return Ok(match directive {
-                            Expression::Spread { source } => Argument::Spread { source },
-                            Expression::Conditional { source, option } => {
-                                Argument::Conditional { source, option }
-                            }
-                            Expression::Repeat { source, option } => {
-                                Argument::Repeat { source, option }
-                            }
-                            Expression::Value { .. } => unreachable!(),
-                        });
-                    }
-                });
-                offset = closing + 1;
-            }
-            '}' => return Err(parse_error(argument, offset, "unmatched `}`")),
-            _ => {
-                literal.push(character);
-                offset += character.len_utf8();
+                (_, character) => {
+                    literal.push(character);
+                    word_started = true;
+                }
             }
         }
-    }
 
-    push_literal(&mut parts, &mut literal);
-    Ok(Argument::Interpolated(parts))
-}
-
-fn parse_expression(body: &str, argument: usize, offset: usize) -> Result<Expression, Error> {
-    if body.is_empty() {
-        return Err(parse_error(
-            argument,
-            offset,
-            "placeholders cannot be empty",
-        ));
-    }
-
-    if let Some(directive) = body.strip_prefix('?') {
-        let (path, option) = split_directive(directive, argument, offset, "conditional")?;
-        validate_option(option, argument, offset)?;
-        return Ok(Expression::Conditional {
-            source: parse_path(path, argument, offset)?,
-            option: option.to_owned(),
-        });
-    }
-
-    if let Some(directive) = body.strip_prefix('*') {
-        let (path, option) = split_directive(directive, argument, offset, "repeat")?;
-        validate_option(option, argument, offset)?;
-        return Ok(Expression::Repeat {
-            source: parse_path(path, argument, offset)?,
-            option: option.to_owned(),
-        });
-    }
-
-    if let Some(path) = body.strip_suffix("...") {
-        if path.contains(":-") {
+        if let Some(character) = quote {
             return Err(parse_error(
-                argument,
-                offset,
-                "spread placeholders do not support defaults",
+                input.len(),
+                format!("unterminated `{character}` quote"),
             ));
         }
-        return Ok(Expression::Spread {
-            source: parse_path(path, argument, offset)?,
-        });
+        if word_started {
+            push_literal(&mut parts, &mut literal);
+            if parts.is_empty() {
+                parts.push(Part::Literal(String::new()));
+            }
+            words.push(Word {
+                index: words.len() + 1,
+                parts: std::mem::take(&mut parts),
+            });
+        }
+
+        Ok(Self { words })
     }
 
-    let (path, default) = match body.split_once(":-") {
-        Some((path, default)) => (path, Some(default.to_owned())),
-        None => (body, None),
-    };
-    Ok(Expression::Value {
-        source: parse_path(path, argument, offset)?,
-        default,
-    })
-}
-
-fn split_directive<'a>(
-    directive: &'a str,
-    argument: usize,
-    offset: usize,
-    name: &str,
-) -> Result<(&'a str, &'a str), Error> {
-    let Some((path, option)) = directive.split_once(':') else {
-        return Err(parse_error(
-            argument,
-            offset,
-            format!("{name} placeholders require `:OPTION`"),
-        ));
-    };
-    if path.is_empty() {
-        return Err(parse_error(
-            argument,
-            offset,
-            format!("{name} placeholders require a configuration path"),
-        ));
+    /// Returns the number of template words.
+    pub fn len(&self) -> usize {
+        self.words.len()
     }
-    if option.is_empty() {
-        return Err(parse_error(
-            argument,
-            offset,
-            format!("{name} placeholders require an option token"),
-        ));
-    }
-    Ok((path, option))
-}
 
-fn validate_option(option: &str, argument: usize, offset: usize) -> Result<(), Error> {
-    let valid = option.starts_with('-')
-        && option != "-"
-        && option != "--"
-        && !option.contains(char::is_whitespace)
-        && !option.contains('=');
-    if valid {
-        Ok(())
-    } else {
-        Err(parse_error(
-            argument,
-            offset,
-            "directive output must be a `-x` or `--name` option without whitespace or `=`",
-        ))
+    /// Returns whether the template has no words.
+    pub fn is_empty(&self) -> bool {
+        self.words.is_empty()
     }
 }
 
-fn parse_path(path: &str, argument: usize, offset: usize) -> Result<ConfigPath, Error> {
-    ConfigPath::parse(path).map_err(|error| parse_error(argument, offset, error.to_string()))
+fn end_word(words: &mut Vec<Word>, parts: &mut Vec<Part>, literal: &mut String) {
+    push_literal(parts, literal);
+    if parts.is_empty() {
+        parts.push(Part::Literal(String::new()));
+    }
+    words.push(Word {
+        index: words.len() + 1,
+        parts: std::mem::take(parts),
+    });
 }
 
 fn push_literal(parts: &mut Vec<Part>, literal: &mut String) {
@@ -245,10 +180,113 @@ fn push_literal(parts: &mut Vec<Part>, literal: &mut String) {
     }
 }
 
-fn parse_error(argument: usize, offset: usize, message: impl Into<String>) -> Error {
+/// Parses the slot body starting after `{` at `offset`, leaving the cursor
+/// after the closing `}`.
+fn parse_slot(
+    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
+    offset: usize,
+) -> Result<SlotRef, Error> {
+    let mut body = String::new();
+    for (_, character) in chars.by_ref() {
+        if character == '}' {
+            return slot_from_body(&body, offset);
+        }
+        match character {
+            '{' => {
+                return Err(parse_error(
+                    offset,
+                    "nested `{` is not allowed inside a slot",
+                ));
+            }
+            _ => body.push(character),
+        }
+    }
+    Err(parse_error(offset, "missing closing `}` for slot"))
+}
+
+fn slot_from_body(body: &str, offset: usize) -> Result<SlotRef, Error> {
+    if body.is_empty() {
+        return Ok(SlotRef::Next);
+    }
+    if body.bytes().all(|byte| byte.is_ascii_digit()) {
+        let index: usize = body
+            .parse()
+            .map_err(|_| parse_error(offset, format!("slot index `{body}` is too large")))?;
+        if index == 0 {
+            return Err(parse_error(offset, "slot indexes are one-based"));
+        }
+        return Ok(SlotRef::Index(index));
+    }
+    let valid = body
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        && body
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
+    if valid {
+        Ok(SlotRef::Name(body.to_owned()))
+    } else {
+        Err(parse_error(
+            offset,
+            "slots must be empty, a one-based index, or a name",
+        ))
+    }
+}
+
+fn parse_error(offset: usize, message: impl Into<String>) -> Error {
     Error::Parse {
-        argument,
         offset,
         message: message.into(),
+    }
+}
+
+/// A jq filter argument, either positional or bound to a name.
+///
+/// An argument is a binding when it starts with `NAME=` where `NAME` matches
+/// `[A-Za-z_][A-Za-z0-9_]*`; otherwise it is a positional filter source. The
+/// source is handed to the jq compiler verbatim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Filter {
+    name: Option<String>,
+    source: String,
+}
+
+impl Filter {
+    /// Splits a raw filter argument into an optional binding name and source.
+    pub fn parse(input: &str) -> Self {
+        let prefix_len: usize = input
+            .chars()
+            .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+            .map(char::len_utf8)
+            .sum();
+        let is_binding = prefix_len > 0
+            && !input
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_digit())
+            && input[prefix_len..].starts_with('=');
+
+        if is_binding {
+            Self {
+                name: Some(input[..prefix_len].to_owned()),
+                source: input[prefix_len + 1..].to_owned(),
+            }
+        } else {
+            Self {
+                name: None,
+                source: input.to_owned(),
+            }
+        }
+    }
+
+    /// Returns the binding name, if any.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Returns the jq filter source.
+    pub fn source(&self) -> &str {
+        &self.source
     }
 }

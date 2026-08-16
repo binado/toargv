@@ -13,5 +13,8 @@ keywords = ["cli", "configuration", "arguments", "template", "parser"]
 categories = ["command-line-utilities", "config", "parser-implementations"]
 
 [dependencies]
+jaq-core = "3.1"
+jaq-json = { version = "=2.0.2", features = ["serde"] }
+jaq-std = "3.0"
 serde_json = "1.0"
 thiserror = "2.0"

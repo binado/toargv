@@ -25,13 +25,19 @@ use std::path::Path;
 pub use error::Error;
 pub use execute::execute;
 pub use load::load_config;
-pub use template::{Template, expand};
+pub use template::{Filter, Template, expand};
 
-/// Loads a configuration, parses an argv template, and expands its arguments.
-pub fn build_arguments(config_path: &Path, template: &[String]) -> Result<Vec<String>, Error> {
+/// Loads a configuration, parses a template string, and expands its slots
+/// with the given jq filters.
+pub fn build_arguments(
+    config_path: &Path,
+    template: &str,
+    filters: &[String],
+) -> Result<Vec<String>, Error> {
     let config = load_config(config_path)?;
     let template = Template::parse(template)?;
-    Ok(expand(&config, &template)?)
+    let filters: Vec<Filter> = filters.iter().map(|source| Filter::parse(source)).collect();
+    Ok(expand(&config, &template, &filters)?)
 }
 
 /// Concatenates a command prefix with expanded arguments, matching the argv
@@ -59,4 +65,22 @@ pub fn render_shell(arguments: &[String]) -> Result<String, Error> {
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|parts| parts.join(" "))
+}
+
+/// Renders an argument vector NUL-separated, in the format `xargs -0`
+/// expects: every argument terminated by a NUL byte.
+///
+/// NUL cannot occur inside an operating-system argument, so this encoding
+/// preserves boundaries without any quoting grammar. Returns
+/// [`Error::NulByte`] if an argument itself contains a NUL byte.
+pub fn render_nul(arguments: &[String]) -> Result<Vec<u8>, Error> {
+    let mut bytes = Vec::new();
+    for argument in arguments {
+        if argument.contains('\0') {
+            return Err(Error::NulByte(argument.clone()));
+        }
+        bytes.extend_from_slice(argument.as_bytes());
+        bytes.push(0);
+    }
+    Ok(bytes)
 }

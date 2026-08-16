@@ -15,7 +15,7 @@ pub struct Cli {
     pub config: PathBuf,
 
     /// Check that the template can be expanded, printing nothing
-    #[arg(long, short = 'c', conflicts_with_all = ["dry_run", "exec"])]
+    #[arg(long, short = 'c', conflicts_with_all = ["dry_run", "exec", "print0"])]
     pub check: bool,
 
     /// Program to execute with the expanded arguments
@@ -23,12 +23,20 @@ pub struct Cli {
     pub exec: Option<OsString>,
 
     /// Print the expanded command instead of running it
-    #[arg(short = 'n', long, requires = "exec")]
+    #[arg(short = 'n', long, requires = "exec", conflicts_with = "print0")]
     pub dry_run: bool,
 
-    /// Literal arguments and configuration placeholders to expand
-    #[arg(last = true, value_name = "TEMPLATE")]
-    pub template: Vec<String>,
+    /// Separate printed arguments with NUL bytes instead of spaces
+    #[arg(short = '0', long, conflicts_with = "exec")]
+    pub print0: bool,
+
+    /// Template string with `{}`, `{N}`, or `{name}` slots
+    #[arg(value_name = "TEMPLATE", allow_hyphen_values = true)]
+    pub template: Option<String>,
+
+    /// jq filters for template slots, or `NAME=FILTER` bindings for named slots
+    #[arg(value_name = "FILTER")]
+    pub filters: Vec<String>,
 }
 
 /// What a parsed invocation asks for, with the flag combinations already resolved.
@@ -36,10 +44,12 @@ pub struct Cli {
 pub enum Mode<'a> {
     /// Validate template expansion without producing output.
     Check,
-    /// Render expanded arguments as shell syntax without executing a process.
+    /// Render expanded arguments without executing a process.
     Print {
         /// Program to print ahead of the expanded arguments for a dry run.
         program: Option<&'a OsString>,
+        /// Separate arguments with NUL bytes for `xargs -0`-style consumers.
+        nul_terminated: bool,
     },
     /// Execute a command with expanded arguments appended.
     Exec {
@@ -71,6 +81,7 @@ impl Cli {
             } else {
                 None
             },
+            nul_terminated: self.print0,
         }
     }
 }

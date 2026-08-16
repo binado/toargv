@@ -2,7 +2,7 @@ use std::process::{self, ExitStatus};
 
 use clap::Parser;
 use toargv::cli::{Cli, Mode};
-use toargv::{build_arguments, execute, full_argv, render_shell};
+use toargv::{build_arguments, execute, full_argv, render_nul, render_shell};
 
 fn main() {
     let cli = Cli::parse();
@@ -18,14 +18,25 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<Option<ExitStatus>, toargv::Error> {
-    let arguments = build_arguments(&cli.config, &cli.template)?;
+    let template = cli.template.as_deref().unwrap_or("");
+    let arguments = build_arguments(&cli.config, template, &cli.filters)?;
 
     match cli.mode() {
         Mode::Check => Ok(None),
-        Mode::Print { program } => {
+        Mode::Print {
+            program,
+            nul_terminated,
+        } => {
             let prefix = program.map_or(&[][..], std::slice::from_ref);
             let argv = full_argv(prefix, &arguments);
-            println!("{}", render_shell(&argv)?);
+            if nul_terminated {
+                use std::io::Write;
+                std::io::stdout()
+                    .write_all(&render_nul(&argv)?)
+                    .expect("failed to write to stdout");
+            } else {
+                println!("{}", render_shell(&argv)?);
+            }
             Ok(None)
         }
         Mode::Exec { program } => execute(std::slice::from_ref(program), &arguments).map(Some),
