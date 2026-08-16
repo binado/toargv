@@ -58,34 +58,63 @@ non-finite floats are errors). Config format is selected by case-sensitive
 The template is **a single string**, split into words by a POSIX-shaped lexer
 (`'..'`/`".."` quoting, backslash escapes, `{{`/`}}` literal braces). Quoting
 governs **word splitting only**: braces keep their slot meaning inside quotes
-of either kind, so `{{`/`}}` is the only way to write a literal brace. Every
-content-producing lexer arm must set `word_started`, including the backslash
-arms — a word built solely from escapes is still a word. Words
-contain literal text and slots: `{}` (next positional filter), `{N}` (Nth
-positional), or `{name}` (a `NAME=FILTER` binding argument). Positional and
-named slot styles cannot be mixed (parse error). A filter argument is a
-binding iff it matches `^[A-Za-z_][A-Za-z0-9_]*=`; everything else is a
-positional jq program handed to jaq verbatim — jq source never appears inside
-the template string, so filter bytes (braces, strings, comments) need no
-escaping grammar.
+of either kind, so *inside quotes* `{{`/`}}` is the only way to write a literal
+brace. Outside quotes the `(None, '\\')` arm consumes the brace before the slot
+arm sees it, so `\{` is a literal brace too; a trailing backslash with nothing
+to escape is kept literally. Every content-producing lexer arm must set
+`word_started`, including the backslash arms — a word built solely from escapes
+is still a word. Words contain literal text and slots: `{}` (next positional
+filter), `{N}` (Nth positional), or `{name}` (a `NAME=FILTER` binding
+argument). Positional and named slot styles cannot be mixed (parse error). A
+filter argument is a binding iff it matches `^[A-Za-z_][A-Za-z0-9_]*=`;
+everything else is a positional jq program handed to jaq verbatim — jq source
+never appears inside the template string, so filter bytes (braces, strings,
+comments) need no escaping grammar.
 
 Cardinality rules mirror the word structure:
 
 - a slot *embedded* in a word requires its filter to yield exactly one scalar;
 - a word that is exactly one slot flattens 0..N filter values into argv.
 
+"Exactly one slot" is structural, so an **opened quote counts as content even
+when empty**: the lexer's `literal_opened` flag makes `push_literal` emit
+`Part::Literal("")` for `""`, which is why `""{}` is an embedded slot while
+`{}` is not, and why `''` alone is still one empty argument. Never drop empty
+literals — doing so silently flips a word onto the flattening path.
+
 Every emitted value passes the `scalar()` gate in `expand.rs`: strings
-verbatim, numbers/bools stringified, null/array/object rejected — strictness
-on missing keys emerges from jq producing `null`, not from a special case.
+verbatim, numbers/bools stringified, null/array/object/byte-string/non-UTF-8
+rejected — strictness on missing keys emerges from jq producing `null`, not
+from a special case. Non-finite numbers are *not* rejected; `infinite`/`nan`
+stringify to `Infinity`/`NaN`, unlike non-finite floats in a TOML config, which
+`load.rs` fails on.
+
 Each filter is compiled and evaluated **once** regardless of reuse, via
-`jq.rs`; a filter may yield at most `MAX_OUTPUT_VALUES` (100k) values, which
-bounds runaway programs like unbounded recursion.
+`jq.rs`. Runaway filters are bounded by three independent guards, no one of
+which covers the others:
+
+- `MAX_OUTPUT_VALUES` (100k) caps values a filter *yields* (`repeat(.)`). The
+  check runs after the push, so N+1 values are briefly held.
+- `MAX_FILTER_DEPTH` (256) caps `(`/`[`/`{` nesting in a filter *source*,
+  scanned by `nesting_depth` before `loader.load`, because jaq's
+  recursive-descent parser would otherwise overflow the stack. The scan skips
+  jq strings and `#` comments and treats `\(` as a plain escape, under-counting
+  deliberately: it may miss depth, but must never reject a valid filter.
+- `MAX_FILTER_DURATION` (10s), in the CLI crate, caps filters that loop without
+  yielding (`def f: f; f`).
+
+Unbounded *runtime* recursion (`def f: [f]; f`) is still fatal: a Rust stack
+overflow aborts, so no guard can observe it, and jaq exposes no fuel or depth
+hook for its evaluator. Say so rather than implying it is covered.
 
 Validation happens before evaluation: unknown slot references, unused filter
 arguments, duplicate binding names, and out-of-range indexes are all hard
-errors. Diagnostics identify slots (`slot 2`, `slot {output}`), template words
-(one-based), byte offsets (parse errors), or filter argument positions
-(binding errors) — preserve that specificity when adding syntax.
+errors. Diagnostics identify slots (`slot 2`, ``slot `output` ``), template
+words (one-based), byte offsets (parse errors), or filter argument positions
+(binding errors) — preserve that specificity when adding syntax. A diagnostic
+blames the construct that *broke* the rule, not an earlier legal one: mixing
+slot styles reports the offset of the offending slot and names the conflicting
+earlier slot in the message.
 
 ### The CLI surface
 
@@ -96,12 +125,14 @@ toargv <CONFIG> [TEMPLATE] [FILTER]... [-0 | -c | -e PROGRAM [-n]]
 ```
 
 `template` uses clap's `allow_hyphen_values` so templates beginning with `-x`
-words need no separator; defined flags (`-0/-c/-e/-n`) still win, so `--`
-remains the escape for colliding values. `--exec` consumes exactly one
-program; fixed child arguments (e.g. `-c 'script'`) belong to the template
-string.
+words need no separator; a word exactly matching *any* defined flag still wins
+— short and long forms alike, including `-h/--help` and `-V/--version`, not
+only `-0/-c/-e/-n` — so `--` remains the escape for colliding values. `--exec`
+consumes exactly one program; fixed child arguments (e.g. `-c 'script'`)
+belong to the template string.
 
-All behaviors call `build_arguments` once, then use `Cli::mode`:
+All behaviors call `build_arguments_within(MAX_FILTER_DURATION, ..)` once,
+then use `Cli::mode`:
 
 - default print expands argv as shell syntax;
 - `-0 --print0` expands argv as NUL-separated bytes;
@@ -112,11 +143,24 @@ All behaviors call `build_arguments` once, then use `Cli::mode`:
 Do not re-read raw CLI booleans in `main.rs`; resolve combinations in `Cli::mode`.
 An empty or omitted template is valid.
 
+`build_arguments` keeps its unguarded signature for library callers;
+`build_arguments_within` runs it on a worker thread (with an enlarged stack)
+and waits with `recv_timeout`, returning `Error::Timeout` on the deadline and
+`Error::Worker` when the thread cannot start or ends without a result. Only
+`Vec<String>` crosses the channel, so no `jaq_json::Val` has to be `Send` and
+jaq-json's `sync` feature stays off — do not add it. A timed-out worker is
+abandoned and spins until the process exits; that is why this guard is in the
+CLI, whose next act is to exit, and not in the pure library.
+
 ### Output modes and the shell
 
 - **exec never goes through a shell.** `execute.rs` appends expanded arguments and
   spawns the selected program directly. Spaces and metacharacters remain inside
-  their argv entries. Unix signal termination maps to `128 + signal`.
+  their argv entries. A child terminated by a signal maps to `128 + signal` on
+  Unix and to `1` elsewhere; `toargv`'s own errors always exit 1. Expanded
+  arguments are checked for NUL *before* spawning, so `Error::NulByte` names the
+  argument instead of the spawn folding an `InvalidInput` into `Error::Execute`
+  alongside `ENOENT`/`EACCES`.
 - **default print is deliberately shell syntax.** `render_shell` quotes each
   argument with `shlex::try_quote`. Use only the `try_*` API; deprecated plain
   quoting APIs have security issues. Per-argument quoting lets
@@ -134,7 +178,10 @@ An empty or omitted template is valid.
 positional it swallows `-0`, `-c`, `-e`, and `-n` written after the template;
 filters starting with `-` go after `--`.
 
-`full_argv` and `execute` must remain in step for dry-run output.
+`full_argv` and `execute` must remain in step for dry-run output. `full_argv`
+therefore returns `Result`: a program name that is not valid UTF-8 fails with
+`Error::Unquotable` rather than being rendered lossily, since a dry run that
+prints U+FFFD would show a command `--exec` would not spawn.
 
 ## Testing conventions
 

@@ -26,7 +26,7 @@ pub struct Cli {
     #[arg(short = 'n', long, requires = "exec", conflicts_with = "print0")]
     pub dry_run: bool,
 
-    /// Separate printed arguments with NUL bytes instead of spaces
+    /// Terminate every printed argument with a NUL byte instead of a space
     #[arg(short = '0', long, conflicts_with = "exec")]
     pub print0: bool,
 

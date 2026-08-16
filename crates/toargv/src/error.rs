@@ -53,7 +53,19 @@ pub enum Error {
     #[error("argument cannot be represented in shell syntax: {0:?}")]
     Unquotable(String),
 
-    /// An argument contains a NUL byte and cannot be NUL-separated.
-    #[error("argument contains a NUL byte and cannot be NUL-separated: {0:?}")]
+    /// An argument contains a NUL byte, so it can be neither NUL-separated
+    /// nor passed to a child process.
+    #[error("argument contains a NUL byte: {0:?}")]
     NulByte(String),
+
+    /// Expansion did not finish within the allowed wall-clock time.
+    #[error("filter evaluation did not finish within {seconds} seconds")]
+    Timeout {
+        /// The deadline that elapsed, in seconds.
+        seconds: f64,
+    },
+
+    /// The thread running the expansion could not be started or did not finish.
+    #[error("filter evaluation failed: {0}")]
+    Worker(String),
 }

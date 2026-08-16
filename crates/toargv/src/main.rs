@@ -2,7 +2,9 @@ use std::process::{self, ExitStatus};
 
 use clap::Parser;
 use toargv::cli::{Cli, Mode};
-use toargv::{build_arguments, execute, full_argv, render_nul, render_shell};
+use toargv::{
+    MAX_FILTER_DURATION, build_arguments_within, execute, full_argv, render_nul, render_shell,
+};
 
 fn main() {
     let cli = Cli::parse();
@@ -19,7 +21,8 @@ fn main() {
 
 fn run(cli: Cli) -> Result<Option<ExitStatus>, toargv::Error> {
     let template = cli.template.as_deref().unwrap_or("");
-    let arguments = build_arguments(&cli.config, template, &cli.filters)?;
+    let arguments =
+        build_arguments_within(MAX_FILTER_DURATION, &cli.config, template, &cli.filters)?;
 
     match cli.mode() {
         Mode::Check => Ok(None),
@@ -28,7 +31,7 @@ fn run(cli: Cli) -> Result<Option<ExitStatus>, toargv::Error> {
             nul_terminated,
         } => {
             let prefix = program.map_or(&[][..], std::slice::from_ref);
-            let argv = full_argv(prefix, &arguments);
+            let argv = full_argv(prefix, &arguments)?;
             let bytes = if nul_terminated {
                 render_nul(&argv)?
             } else {

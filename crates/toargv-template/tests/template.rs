@@ -64,10 +64,33 @@ fn escaped_characters_start_a_word_on_their_own() {
 fn quotes_do_not_suppress_slot_interpolation() {
     let config = json!({"a": "value"});
     // Quoting governs word splitting only; braces keep their meaning inside
-    // quotes of either kind, so a literal brace always needs doubling.
+    // quotes of either kind, where doubling is the only way to write a literal
+    // brace. Outside quotes a backslash escape works too, as
+    // `escaped_characters_start_a_word_on_their_own` shows.
     assert_eq!(run("'{}'", &config, &[".a"]).unwrap(), ["value"]);
     assert_eq!(run(r#""{}""#, &config, &[".a"]).unwrap(), ["value"]);
     assert_eq!(run("'{{}}'", &config, &[]).unwrap(), ["{}"]);
+}
+
+#[test]
+fn quoted_empty_literal_makes_a_slot_embedded() {
+    let config = json!({"files": ["a", "b"], "one": "x"});
+
+    // An opened quote is content even when it encloses nothing, so the word is
+    // a literal plus a slot rather than a bare slot, and the flattening path
+    // does not apply.
+    for template in [r#"""{}"#, r#"{}"""#, "''{}", "{}''"] {
+        let Err(Error::Expansion { message, .. }) = run(template, &config, &[".files[]"]) else {
+            panic!("template {template:?} must require exactly one value");
+        };
+        assert!(message.contains("exactly one"), "{template:?}: {message}");
+
+        assert_eq!(run(template, &config, &[".one"]).unwrap(), ["x"]);
+    }
+
+    // A quoted empty word on its own is still one empty argument.
+    assert_eq!(run("''", &config, &[]).unwrap(), [""]);
+    assert_eq!(run(r#""""#, &config, &[]).unwrap(), [""]);
 }
 
 #[test]
@@ -160,6 +183,27 @@ fn mixing_positional_and_named_slots_is_rejected() {
             panic!("template {template:?} must fail");
         };
         assert!(message.contains("cannot be mixed"), "got: {message}");
+    }
+}
+
+#[test]
+fn mixing_slot_styles_blames_the_offending_slot() {
+    let config = json!({});
+
+    // The offset points at the slot that broke the rule, not at the earlier
+    // slot that was legal when it was read.
+    for (template, offending, earlier) in [
+        ("{} {name}", 3, "positional slot at byte 0"),
+        ("{name} {}", 7, "named slot at byte 0"),
+    ] {
+        let Err(Error::Parse { offset, message }) = run(template, &config, &[]) else {
+            panic!("template {template:?} must fail");
+        };
+        assert_eq!(offset, offending, "template {template:?}");
+        assert!(
+            message.contains(earlier),
+            "template {template:?}: {message}"
+        );
     }
 }
 
@@ -292,13 +336,51 @@ fn filter_sources_may_contain_any_bytes() {
         run(
             "{}",
             &config,
-            // braces, strings, comments, and percent signs are all inert here
+            // braces, strings, and comments are all inert here: the filter is
+            // handed to jq verbatim, with no template escaping grammar
             &[r#". | {nested: {braces: "%} {{"}} # a comment with } and %}
               | "done""#],
         )
         .unwrap(),
         ["done"]
     );
+}
+
+#[test]
+fn deeply_nested_filter_sources_are_rejected() {
+    let config = json!({});
+
+    // jaq parses by recursive descent, so an over-nested source would overflow
+    // the stack and abort. The pre-scan turns that into an ordinary error.
+    let Err(Error::Compile { message, .. }) = run("{}", &config, &["[".repeat(5000).as_str()])
+    else {
+        panic!("a deeply nested filter must be rejected");
+    };
+    assert!(message.contains("exceeding the limit"), "got: {message}");
+
+    // Nesting a hand-written filter could plausibly reach is still accepted.
+    let nested = format!("{}1{}", "(".repeat(64), ")".repeat(64));
+    assert_eq!(run("{}", &config, &[nested.as_str()]).unwrap(), ["1"]);
+
+    // Brackets inside jq strings and comments are text, not nesting.
+    let quoted = format!(r#""{}" # {}"#, "[".repeat(1000), "[".repeat(1000));
+    assert_eq!(run("{}", &config, &[quoted.as_str()]).unwrap().len(), 1);
+}
+
+#[test]
+fn filters_at_and_beyond_the_output_bound() {
+    let config = json!({});
+
+    // 100_000 values are the most a single filter may yield.
+    assert_eq!(
+        run("{}", &config, &["range(100000)"]).unwrap().len(),
+        100_000
+    );
+
+    let Err(Error::Expansion { message, .. }) = run("{}", &config, &["range(100001)"]) else {
+        panic!("a filter past the output bound must fail");
+    };
+    assert!(message.contains("more than 100000"), "got: {message}");
 }
 
 #[test]

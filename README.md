@@ -58,9 +58,11 @@ toargv <CONFIG> [TEMPLATE] [FILTER]... [-0 | -c | -e PROGRAM [-n]]
 - `-n`, `--dry-run` prints the full command instead of running it. It requires
   `--exec`.
 - `-c`, `--check` parses and expands the template without printing anything.
-- A template beginning with `-` needs no separator; `-0`, `-c`, `-e`, and `-n`
-  are the only tokens clap owns. Use `--` to pass a template or filter that
-  collides with one of them.
+- A template beginning with `-` needs no separator, but any word that exactly
+  matches a defined flag is still claimed by the argument parser: `-0` and
+  `--print0`, `-c` and `--check`, `-e` and `--exec`, `-n` and `--dry-run`,
+  `-h` and `--help`, `-V` and `--version`. Use `--` to pass a template or
+  filter that collides with one of them.
 - An omitted or empty template expands to an empty argv.
 
 Configuration format is selected from the case-sensitive `.toml` or `.json`
@@ -71,12 +73,14 @@ extension; TOML datetimes become strings.
 The template is split into **words** by whitespace. Quoting controls word
 splitting and follows POSIX shell rules: `'single quotes'` are literal,
 `"double quotes"` are literal except `\"` and `\\`, and a backslash outside
-quotes escapes the next character.
+quotes escapes the next character. A trailing backslash, with nothing left to
+escape, stands for itself: `'ab\'` is the argument `ab\`.
 
 Unlike a shell, quoting does **not** turn off slot interpolation — `{` and `}`
 keep their meaning everywhere, so `'{}'` is a slot, not a literal pair of
-braces. Write `{{` and `}}` for literal braces, inside quotes as well as
-outside. Everything else is a slot:
+braces. Write `{{` and `}}` for literal braces; inside quotes that is the only
+form, while outside them a backslash escape works too, so `\{` is a literal
+`{`. The slot forms are:
 
 | Slot | Refers to |
 | --- | --- |
@@ -96,10 +100,18 @@ named slots cannot be mixed in one template.
   arguments — one per value the filter yields. This is how arrays, conditionals,
   and repeated option/value pairs are expressed.
 
+A quote counts as text even when it encloses nothing, so `""{}` is a word with
+a literal and a slot, not a bare slot: its slot is embedded and requires
+exactly one value. Write `{}` unquoted to flatten a stream.
+
 Every value must be a scalar (string, number, or boolean). Strings are used
 verbatim, including whitespace; numbers and booleans are stringified. `null`,
 arrays, and objects are rejected: missing keys yield `null`, so strictness on
-absent values is automatic.
+absent values is automatic. Byte strings, and strings that are not valid
+UTF-8, are rejected as well. Non-finite jq numbers are *not* rejected: a filter
+yielding `infinite` or `nan` produces the literal arguments `Infinity` and
+`NaN` — unlike a non-finite float in a TOML configuration, which fails to
+load.
 
 `toargv` rejects — before running anything — templates referencing a filter
 that does not exist, and filter arguments no slot references.
@@ -118,13 +130,29 @@ library). Frequent patterns:
 | An array, one argument per element | `.files[]` |
 | Repeated option/value pairs | `.files[] \| "--file", .` |
 | A conditional flag | `if .verbose then "--verbose" else empty end` |
-| Transformed values | `.files[] \| "--file=" + .`, `.targets \| map(.name)` |
+| Transformed values | `.files[] \| "--file=" + .`, `.targets[].name` |
 
 jq's `//` operator substitutes for `null` **and** `false`; use the longer
 `if` form when `false` is a real value in the configuration.
 
-A single filter may yield at most 100,000 values, which bounds runaway
-filters.
+Note that every value must reach a slot as a scalar, so a filter ends in an
+iteration (`.targets[].name`) rather than an array (`.targets | map(.name)`),
+which the scalar gate rejects.
+
+**Bounds on runaway filters.** A filter is an arbitrary program, so `toargv`
+constrains three ways one can fail to finish:
+
+- a filter may yield at most **100,000 values**, which stops filters that
+  produce output without end, such as `repeat(.)`;
+- expansion as a whole gets **10 seconds** of wall-clock time, which stops
+  filters that loop without yielding, such as `def f: f; f`;
+- a filter source may nest brackets at most **256 deep**, which is checked
+  before jq parses it, since a deeply nested source would otherwise overflow
+  the parser's stack.
+
+One case is not covered: a filter recursing at run time without bound, such as
+`def f: [f]; f`, exhausts the stack, and a stack overflow aborts the process
+rather than raising an error that could be reported.
 
 ## NUL-separated output
 
@@ -148,8 +176,15 @@ an error — `toargv` exits 0 without an error, like any other pipeline tool.
 The 0.1 per-argument template syntax was replaced by the single template
 string with jq filters:
 
+In 0.1:
+
 ```console
 $ toargv config.toml -- --output {output} {?verbose:-v} {*files:--file}
+```
+
+In 0.2:
+
+```console
 $ toargv config.toml \
     '--output {} {} {}' \
     '.output' \
@@ -168,8 +203,11 @@ $ toargv config.toml \
 
 ## Execution
 
-Signals terminate `toargv` with exit code `128 + signal` when running under
-`--exec`; otherwise the child exit status is propagated as-is.
+Under `--exec`, `toargv` exits with the child's own exit code. If the child is
+terminated by a signal instead of exiting, `toargv` exits with `128 + signal`
+on Unix, and with `1` elsewhere. Errors raised by `toargv` itself — a bad
+configuration, an invalid template, a filter that fails or runs too long —
+always exit `1`.
 
 ## License
 

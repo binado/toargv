@@ -21,14 +21,33 @@ pub mod template {
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::path::Path;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
 
 pub use error::Error;
 pub use execute::execute;
 pub use load::load_config;
 pub use template::{Filter, Template, expand};
 
+/// The wall-clock budget the CLI gives a full expansion.
+///
+/// A jq filter can loop without ever yielding a value (`def f: f; f`), which
+/// no output bound can catch. The deadline turns that hang into a diagnostic.
+pub const MAX_FILTER_DURATION: Duration = Duration::from_secs(10);
+
+/// Stack size for the expansion worker.
+///
+/// jaq evaluates recursively, so a filter that recurses at run time consumes
+/// the thread's stack. A generous stack raises the depth reached before that
+/// happens; it does not make the failure recoverable, because a Rust stack
+/// overflow aborts the process rather than unwinding.
+const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 /// Loads a configuration, parses a template string, and expands its slots
 /// with the given jq filters.
+///
+/// Filters run to completion: a filter that never terminates hangs this call.
+/// Use [`build_arguments_within`] to bound it.
 pub fn build_arguments(
     config_path: &Path,
     template: &str,
@@ -40,14 +59,64 @@ pub fn build_arguments(
     Ok(expand(&config, &template, &filters)?)
 }
 
+/// Runs [`build_arguments`] under a wall-clock deadline, returning
+/// [`Error::Timeout`] if it does not finish in time.
+///
+/// The work happens on a worker thread while this thread waits on a channel.
+/// Only the finished `Vec<String>` crosses the boundary, so no jq value has to
+/// be `Send` and the jq engine stays confined to one thread.
+///
+/// A timed-out worker is abandoned, not stopped — jaq offers no way to
+/// interrupt an evaluation — so it keeps running until the process exits. That
+/// is why this guard lives in the CLI, whose next act is to exit, and not in
+/// the library.
+pub fn build_arguments_within(
+    timeout: Duration,
+    config_path: &Path,
+    template: &str,
+    filters: &[String],
+) -> Result<Vec<String>, Error> {
+    let config_path = config_path.to_path_buf();
+    let template = template.to_owned();
+    let filters = filters.to_vec();
+    let (sender, receiver) = mpsc::channel();
+
+    std::thread::Builder::new()
+        .stack_size(WORKER_STACK_SIZE)
+        .spawn(move || {
+            // A closed receiver means the deadline already elapsed; the result
+            // is no longer wanted, so a failed send is not an error.
+            let _ = sender.send(build_arguments(&config_path, &template, &filters));
+        })
+        .map_err(|source| Error::Worker(format!("cannot start the evaluation thread: {source}")))?;
+
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => Err(Error::Timeout {
+            seconds: timeout.as_secs_f64(),
+        }),
+        Err(RecvTimeoutError::Disconnected) => Err(Error::Worker(
+            "the evaluation thread ended without a result".to_owned(),
+        )),
+    }
+}
+
 /// Concatenates a command prefix with expanded arguments, matching the argv
 /// `execute` spawns.
-pub fn full_argv(prefix: &[OsString], expanded: &[String]) -> Vec<String> {
-    prefix
-        .iter()
-        .map(|argument| argument.to_string_lossy().into_owned())
-        .chain(expanded.iter().cloned())
-        .collect()
+///
+/// Returns [`Error::Unquotable`] if a prefix argument is not valid UTF-8.
+/// Replacing the invalid bytes would print a command that differs from the one
+/// `execute` spawns, which is exactly what a dry run must not do.
+pub fn full_argv(prefix: &[OsString], expanded: &[String]) -> Result<Vec<String>, Error> {
+    let mut argv = Vec::with_capacity(prefix.len() + expanded.len());
+    for argument in prefix {
+        let text = argument
+            .to_str()
+            .ok_or_else(|| Error::Unquotable(argument.to_string_lossy().into_owned()))?;
+        argv.push(text.to_owned());
+    }
+    argv.extend(expanded.iter().cloned());
+    Ok(argv)
 }
 
 /// Renders an argument vector as shell syntax that preserves argument

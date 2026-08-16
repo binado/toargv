@@ -116,8 +116,10 @@ pub fn expand(
             });
         }
     }
-    // Sorted by argument so the earliest unreferenced binding is blamed, matching
-    // the positional branch above.
+    // Sorted by argument so the earliest unreferenced *binding* is blamed rather
+    // than whichever one the hash map happens to yield first. The positional loop
+    // above runs to completion first, so an unreferenced positional always wins
+    // over an unreferenced binding, even one written earlier.
     let mut unreferenced: Vec<(&str, usize)> = named_arguments
         .iter()
         .map(|(name, argument)| (*name, *argument))

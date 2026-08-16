@@ -42,13 +42,22 @@ impl Template {
     /// backslash, and a backslash outside quotes escapes the next character.
     ///
     /// Unlike a shell, quotes do not suppress slot interpolation: `{` and `}`
-    /// keep their meaning inside quotes of either kind, so `'{}'` is a slot
-    /// and a literal brace is always written `{{` or `}}`. Positional (`{}`,
-    /// `{N}`) and named (`{name}`) slots cannot be mixed within one template.
+    /// keep their meaning inside quotes of either kind, so `'{}'` is a slot.
+    /// Inside quotes `{{` and `}}` are the only way to write a literal brace;
+    /// outside them a backslash escape (`\{`) works too. A trailing backslash
+    /// with nothing left to escape is kept literally. Positional (`{}`, `{N}`)
+    /// and named (`{name}`) slots cannot be mixed within one template.
+    ///
+    /// An opened quote is itself content: `""` contributes an empty literal,
+    /// so `""{}` is a word with a literal and a slot rather than a bare slot,
+    /// and its slot is embedded for cardinality purposes.
     pub fn parse(input: &str) -> Result<Self, Error> {
         let mut words = Vec::new();
         let mut parts = Vec::new();
         let mut literal = String::new();
+        // Set when a quote opened within the current word: the section it
+        // begins is a literal even if it turns out to contain nothing.
+        let mut literal_opened = false;
         let mut word_started = false;
         let mut quote: Option<char> = None;
         let mut positional_offset: Option<usize> = None;
@@ -66,12 +75,13 @@ impl Template {
             match (quote, character) {
                 (None, ' ' | '\t' | '\n' | '\r') => {
                     if word_started {
-                        end_word(&mut words, &mut parts, &mut literal);
+                        end_word(&mut words, &mut parts, &mut literal, &mut literal_opened);
                         word_started = false;
                     }
                 }
                 (None, '\'' | '"') => {
                     quote = Some(character);
+                    literal_opened = true;
                     word_started = true;
                 }
                 (Some('"'), '\\') => {
@@ -98,12 +108,17 @@ impl Template {
                         continue;
                     }
                     let slot = parse_slot(&mut chars, offset)?;
+                    // The slot that breaks the rule is the one blamed; the
+                    // earlier, still-legal slot is named in the message.
                     match &slot {
                         SlotRef::Next | SlotRef::Index(_) => {
                             if let Some(named) = named_offset {
                                 return Err(parse_error(
-                                    named,
-                                    "named and positional slots cannot be mixed",
+                                    offset,
+                                    format!(
+                                        "named and positional slots cannot be mixed; \
+                                         the named slot at byte {named} comes first"
+                                    ),
                                 ));
                             }
                             positional_offset.get_or_insert(offset);
@@ -111,14 +126,17 @@ impl Template {
                         SlotRef::Name(_) => {
                             if let Some(positional) = positional_offset {
                                 return Err(parse_error(
-                                    positional,
-                                    "named and positional slots cannot be mixed",
+                                    offset,
+                                    format!(
+                                        "named and positional slots cannot be mixed; \
+                                         the positional slot at byte {positional} comes first"
+                                    ),
                                 ));
                             }
                             named_offset.get_or_insert(offset);
                         }
                     }
-                    push_literal(&mut parts, &mut literal);
+                    push_literal(&mut parts, &mut literal, &mut literal_opened);
                     parts.push(Part::Slot(slot));
                     word_started = true;
                 }
@@ -148,14 +166,7 @@ impl Template {
             ));
         }
         if word_started {
-            push_literal(&mut parts, &mut literal);
-            if parts.is_empty() {
-                parts.push(Part::Literal(String::new()));
-            }
-            words.push(Word {
-                index: words.len() + 1,
-                parts: std::mem::take(&mut parts),
-            });
+            end_word(&mut words, &mut parts, &mut literal, &mut literal_opened);
         }
 
         Ok(Self { words })
@@ -172,21 +183,32 @@ impl Template {
     }
 }
 
-fn end_word(words: &mut Vec<Word>, parts: &mut Vec<Part>, literal: &mut String) {
-    push_literal(parts, literal);
-    if parts.is_empty() {
-        parts.push(Part::Literal(String::new()));
-    }
+/// Closes the word under construction. Every lexer arm that sets
+/// `word_started` either pushes a part or opens a literal section, so the
+/// finished word is never empty.
+fn end_word(
+    words: &mut Vec<Word>,
+    parts: &mut Vec<Part>,
+    literal: &mut String,
+    literal_opened: &mut bool,
+) {
+    push_literal(parts, literal, literal_opened);
     words.push(Word {
         index: words.len() + 1,
         parts: std::mem::take(parts),
     });
 }
 
-fn push_literal(parts: &mut Vec<Part>, literal: &mut String) {
-    if !literal.is_empty() {
+/// Flushes buffered literal text into `parts`.
+///
+/// An empty buffer still produces a `Literal` when a quote opened the section:
+/// `""` is written content, and dropping it would turn `""{}` into a bare slot
+/// and silently give it the flattening cardinality of a whole-word slot.
+fn push_literal(parts: &mut Vec<Part>, literal: &mut String, literal_opened: &mut bool) {
+    if !literal.is_empty() || *literal_opened {
         parts.push(Part::Literal(std::mem::take(literal)));
     }
+    *literal_opened = false;
 }
 
 /// Parses the slot body starting after `{` at `offset`, leaving the cursor

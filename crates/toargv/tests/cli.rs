@@ -11,8 +11,12 @@ fn toargv(arguments: &[&str]) -> Output {
 }
 
 fn fixture(config: &str) -> (TempDir, String) {
+    named_fixture("config.toml", config)
+}
+
+fn named_fixture(name: &str, config: &str) -> (TempDir, String) {
     let directory = tempfile::tempdir().unwrap();
-    let config_path = directory.path().join("config.toml");
+    let config_path = directory.path().join(name);
     fs::write(&config_path, config).unwrap();
     (directory, config_path.to_string_lossy().into_owned())
 }
@@ -249,6 +253,46 @@ fn dry_run_prints_the_expanded_command() {
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         "program --name 'two words'\n"
+    );
+}
+
+#[test]
+fn exec_reports_nul_bytes_in_arguments_not_the_program() {
+    let (_directory, config) = named_fixture("config.json", r#"{"value":"a\u0000b"}"#);
+
+    let output = toargv(&[&config, "--exec", "/bin/echo", "{}", ".value"]);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    // Spawning would fail too, but as an `InvalidInput` blamed on the program.
+    // The diagnostic must name the argument, as the print modes do.
+    assert!(!output.status.success());
+    assert!(stderr.contains("NUL byte"), "got: {stderr}");
+    assert!(!stderr.contains("/bin/echo"), "got: {stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn dry_run_rejects_a_non_utf8_program() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let (_directory, config) = fixture("");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_toargv"))
+        .args([OsString::from(config), OsString::from("-n")])
+        .arg("--exec")
+        .arg(OsString::from_vec(vec![b'p', 0xff, b'g']))
+        .output()
+        .unwrap();
+
+    // Printing the program lossily would show a command that differs from the
+    // one `--exec` spawns, so a dry run fails instead.
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("shell syntax"),
+        "got: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

@@ -1,8 +1,9 @@
 use std::fs;
+use std::time::Duration;
 
 use tempfile::tempdir;
 use toargv::load::load_config;
-use toargv::{Error, build_arguments, render_nul, render_shell};
+use toargv::{Error, build_arguments, build_arguments_within, render_nul, render_shell};
 
 fn shell(arguments: &[&str]) -> String {
     let owned: Vec<String> = arguments.iter().map(|value| value.to_string()).collect();
@@ -103,6 +104,43 @@ fn nul_rendering_rejects_arguments_containing_a_nul_byte() {
     let error = render_nul(&arguments).unwrap_err();
 
     assert!(matches!(&error, Error::NulByte(argument) if argument == "with\0nul"));
+}
+
+#[test]
+fn evaluation_that_never_terminates_times_out() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    fs::write(&path, "").unwrap();
+
+    // A filter that recurses without ever yielding defeats the output bound,
+    // so only wall-clock time can stop it. The deadline is a parameter here
+    // precisely so this test need not wait out `MAX_FILTER_DURATION`.
+    let error = build_arguments_within(
+        Duration::from_millis(100),
+        &path,
+        "{}",
+        &["def f: f; f".to_owned()],
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, Error::Timeout { .. }), "got: {error}");
+}
+
+#[test]
+fn a_bounded_deadline_still_returns_results() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    fs::write(&path, "output = \"result.txt\"\n").unwrap();
+
+    let arguments = build_arguments_within(
+        Duration::from_secs(30),
+        &path,
+        "--output {}",
+        &[".output".to_owned()],
+    )
+    .unwrap();
+
+    assert_eq!(arguments, ["--output", "result.txt"]);
 }
 
 #[test]
