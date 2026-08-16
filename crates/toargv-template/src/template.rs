@@ -37,11 +37,14 @@ pub(crate) enum SlotRef {
 impl Template {
     /// Parses a template string into words with resolved quoting and slots.
     ///
-    /// Quoting follows POSIX shell word rules: single quotes are literal,
-    /// double quotes escape `\` and `"` with a backslash, and a backslash
-    /// outside quotes escapes the next character. `{{` and `}}` emit literal
-    /// braces. Positional (`{}`, `{N}`) and named (`{name}`) slots cannot be
-    /// mixed within one template.
+    /// Quoting governs word splitting only, following POSIX shell rules:
+    /// single quotes are literal, double quotes escape `\` and `"` with a
+    /// backslash, and a backslash outside quotes escapes the next character.
+    ///
+    /// Unlike a shell, quotes do not suppress slot interpolation: `{` and `}`
+    /// keep their meaning inside quotes of either kind, so `'{}'` is a slot
+    /// and a literal brace is always written `{{` or `}}`. Positional (`{}`,
+    /// `{N}`) and named (`{name}`) slots cannot be mixed within one template.
     pub fn parse(input: &str) -> Result<Self, Error> {
         let mut words = Vec::new();
         let mut parts = Vec::new();
@@ -71,16 +74,22 @@ impl Template {
                     quote = Some(character);
                     word_started = true;
                 }
-                (Some('"'), '\\') => match chars.peek().copied() {
-                    Some((_, '"' | '\\')) => {
-                        literal.push(chars.next().expect("peeked").1);
+                (Some('"'), '\\') => {
+                    match chars.peek().copied() {
+                        Some((_, '"' | '\\')) => {
+                            literal.push(chars.next().expect("peeked").1);
+                        }
+                        _ => literal.push('\\'),
                     }
-                    _ => literal.push('\\'),
-                },
-                (None, '\\') => match chars.next() {
-                    Some((_, escaped)) => literal.push(escaped),
-                    None => literal.push('\\'),
-                },
+                    word_started = true;
+                }
+                (None, '\\') => {
+                    match chars.next() {
+                        Some((_, escaped)) => literal.push(escaped),
+                        None => literal.push('\\'),
+                    }
+                    word_started = true;
+                }
                 (_, '{') => {
                     if matches!(chars.peek(), Some((_, '{'))) {
                         chars.next();

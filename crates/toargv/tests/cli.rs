@@ -251,3 +251,45 @@ fn dry_run_prints_the_expanded_command() {
         "program --name 'two words'\n"
     );
 }
+
+/// Spawns toargv, closes the read end of its stdout pipe, and returns the
+/// process result once it has finished writing into the broken pipe.
+#[cfg(unix)]
+fn output_with_closed_stdout(arguments: &[&str]) -> Output {
+    use std::process::Stdio;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_toargv"))
+        .args(arguments)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take().expect("piped stdout"));
+    child.wait_with_output().unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_closed_stdout_reader_ends_the_process_quietly() {
+    let (_directory, config) = fixture("");
+
+    // Well past a pipe buffer, so the write genuinely fails rather than
+    // being absorbed, and under the 100k divergence bound.
+    for mode in [&["-0"][..], &[][..]] {
+        let mut arguments = vec![config.as_str(), "{}", "range(90000) | tostring"];
+        arguments.extend_from_slice(mode);
+
+        let output = output_with_closed_stdout(&arguments);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            !stderr.contains("panicked"),
+            "a closed reader must not panic: {stderr}"
+        );
+        assert_ne!(
+            output.status.code(),
+            Some(101),
+            "a closed reader must not abort: {stderr}"
+        );
+    }
+}

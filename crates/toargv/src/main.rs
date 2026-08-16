@@ -29,17 +29,36 @@ fn run(cli: Cli) -> Result<Option<ExitStatus>, toargv::Error> {
         } => {
             let prefix = program.map_or(&[][..], std::slice::from_ref);
             let argv = full_argv(prefix, &arguments);
-            if nul_terminated {
-                use std::io::Write;
-                std::io::stdout()
-                    .write_all(&render_nul(&argv)?)
-                    .expect("failed to write to stdout");
+            let bytes = if nul_terminated {
+                render_nul(&argv)?
             } else {
-                println!("{}", render_shell(&argv)?);
-            }
+                let mut line = render_shell(&argv)?.into_bytes();
+                line.push(b'\n');
+                line
+            };
+            write_stdout(&bytes);
             Ok(None)
         }
         Mode::Exec { program } => execute(std::slice::from_ref(program), &arguments).map(Some),
+    }
+}
+
+/// Writes rendered output to stdout, exiting quietly when the reader is gone.
+///
+/// A consumer that stops reading — `| head`, or an `xargs -0` that aborts — is
+/// normal for a filter, so a broken pipe ends the process silently rather than
+/// panicking or reporting an error.
+fn write_stdout(bytes: &[u8]) {
+    use std::io::{ErrorKind, Write};
+
+    let mut stdout = std::io::stdout();
+    match stdout.write_all(bytes).and_then(|()| stdout.flush()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => process::exit(0),
+        Err(error) => {
+            eprintln!("error: cannot write to stdout: {error}");
+            process::exit(1);
+        }
     }
 }
 
