@@ -51,20 +51,16 @@ impl Template {
         let mut literal_opened = false;
         let mut word_started = false;
         let mut quote: Option<char> = None;
-        let mut positional_offset: Option<usize> = None;
-        let mut named_offset: Option<usize> = None;
+        // (is_named, byte offset) of the first slot, for the mixing check.
+        let mut first_style: Option<(bool, usize)> = None;
         let mut next_index = 1usize;
 
         let mut chars = input.char_indices().peekable();
         while let Some((offset, character)) = chars.next() {
-            if let Some(closing) = quote
-                && character == closing
-            {
-                quote = None;
-                continue;
-            }
-
             match (quote, character) {
+                (Some(closing), c) if c == closing => {
+                    quote = None;
+                }
                 (None, ' ' | '\t' | '\n' | '\r') => {
                     if word_started {
                         end_word(&mut words, &mut parts, &mut literal, &mut literal_opened);
@@ -102,32 +98,20 @@ impl Template {
                     let slot = parse_slot(&mut chars, offset, &mut next_index)?;
                     // The slot that breaks the rule is the one blamed; the
                     // earlier, still-legal slot is named in the message.
-                    match &slot {
-                        SlotLabel::Positional(_) => {
-                            if let Some(named) = named_offset {
-                                return Err(parse_error(
-                                    offset,
-                                    format!(
-                                        "named and positional slots cannot be mixed; \
-                                         the named slot at byte {named} comes first"
-                                    ),
-                                ));
-                            }
-                            positional_offset.get_or_insert(offset);
-                        }
-                        SlotLabel::Named(_) => {
-                            if let Some(positional) = positional_offset {
-                                return Err(parse_error(
-                                    offset,
-                                    format!(
-                                        "named and positional slots cannot be mixed; \
-                                         the positional slot at byte {positional} comes first"
-                                    ),
-                                ));
-                            }
-                            named_offset.get_or_insert(offset);
-                        }
+                    let named = matches!(slot, SlotLabel::Named(_));
+                    if let Some((prev_named, prev_offset)) = first_style
+                        && prev_named != named
+                    {
+                        let earlier = if prev_named { "named" } else { "positional" };
+                        return Err(parse_error(
+                            offset,
+                            format!(
+                                "named and positional slots cannot be mixed; \
+                                 the {earlier} slot at byte {prev_offset} comes first"
+                            ),
+                        ));
                     }
+                    first_style.get_or_insert((named, offset));
                     push_literal(&mut parts, &mut literal, &mut literal_opened);
                     parts.push(Part::Slot(slot));
                     word_started = true;
