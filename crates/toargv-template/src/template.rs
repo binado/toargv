@@ -1,4 +1,4 @@
-use crate::Error;
+use crate::error::{Error, SlotLabel};
 
 /// A validated template string alongside its slot references.
 ///
@@ -20,18 +20,7 @@ pub(crate) struct Word {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Part {
     Literal(String),
-    Slot(SlotRef),
-}
-
-/// An unresolved slot reference as written in the template.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum SlotRef {
-    /// `{}`, consuming the next positional filter in order.
-    Next,
-    /// `{N}`, referring to the Nth positional filter (one-based).
-    Index(usize),
-    /// `{name}`, referring to a `name=FILTER` argument.
-    Name(String),
+    Slot(SlotLabel),
 }
 
 impl Template {
@@ -47,6 +36,8 @@ impl Template {
     /// outside them a backslash escape (`\{`) works too. A trailing backslash
     /// with nothing left to escape is kept literally. Positional (`{}`, `{N}`)
     /// and named (`{name}`) slots cannot be mixed within one template.
+    /// `{}` is numbered here: each occurrence gets the next positional index,
+    /// and `{N}` does not advance that counter.
     ///
     /// An opened quote is itself content: `""` contributes an empty literal,
     /// so `""{}` is a word with a literal and a slot rather than a bare slot,
@@ -62,6 +53,7 @@ impl Template {
         let mut quote: Option<char> = None;
         let mut positional_offset: Option<usize> = None;
         let mut named_offset: Option<usize> = None;
+        let mut next_index = 1usize;
 
         let mut chars = input.char_indices().peekable();
         while let Some((offset, character)) = chars.next() {
@@ -107,11 +99,11 @@ impl Template {
                         word_started = true;
                         continue;
                     }
-                    let slot = parse_slot(&mut chars, offset)?;
+                    let slot = parse_slot(&mut chars, offset, &mut next_index)?;
                     // The slot that breaks the rule is the one blamed; the
                     // earlier, still-legal slot is named in the message.
                     match &slot {
-                        SlotRef::Next | SlotRef::Index(_) => {
+                        SlotLabel::Positional(_) => {
                             if let Some(named) = named_offset {
                                 return Err(parse_error(
                                     offset,
@@ -123,7 +115,7 @@ impl Template {
                             }
                             positional_offset.get_or_insert(offset);
                         }
-                        SlotRef::Name(_) => {
+                        SlotLabel::Named(_) => {
                             if let Some(positional) = positional_offset {
                                 return Err(parse_error(
                                     offset,
@@ -212,15 +204,17 @@ fn push_literal(parts: &mut Vec<Part>, literal: &mut String, literal_opened: &mu
 }
 
 /// Parses the slot body starting after `{` at `offset`, leaving the cursor
-/// after the closing `}`.
+/// after the closing `}`. `{}` consumes and increments `next_index`; `{N}`
+/// does not.
 fn parse_slot(
     chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
     offset: usize,
-) -> Result<SlotRef, Error> {
+    next_index: &mut usize,
+) -> Result<SlotLabel, Error> {
     let mut body = String::new();
     for (_, character) in chars.by_ref() {
         if character == '}' {
-            return slot_from_body(&body, offset);
+            return slot_from_body(&body, offset, next_index);
         }
         match character {
             '{' => {
@@ -235,9 +229,17 @@ fn parse_slot(
     Err(parse_error(offset, "missing closing `}` for slot"))
 }
 
-fn slot_from_body(body: &str, offset: usize) -> Result<SlotRef, Error> {
+fn is_ident(text: &str) -> bool {
+    let mut chars = text.chars();
+    matches!(chars.next(), Some('A'..='Z' | 'a'..='z' | '_'))
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+fn slot_from_body(body: &str, offset: usize, next_index: &mut usize) -> Result<SlotLabel, Error> {
     if body.is_empty() {
-        return Ok(SlotRef::Next);
+        let index = *next_index;
+        *next_index += 1;
+        return Ok(SlotLabel::Positional(index));
     }
     if body.bytes().all(|byte| byte.is_ascii_digit()) {
         let index: usize = body
@@ -246,17 +248,10 @@ fn slot_from_body(body: &str, offset: usize) -> Result<SlotRef, Error> {
         if index == 0 {
             return Err(parse_error(offset, "slot indexes are one-based"));
         }
-        return Ok(SlotRef::Index(index));
+        return Ok(SlotLabel::Positional(index));
     }
-    let valid = body
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character == '_')
-        && body
-            .chars()
-            .next()
-            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
-    if valid {
-        Ok(SlotRef::Name(body.to_owned()))
+    if is_ident(body) {
+        Ok(SlotLabel::Named(body.to_owned()))
     } else {
         Err(parse_error(
             offset,
@@ -286,28 +281,15 @@ pub struct Filter {
 impl Filter {
     /// Splits a raw filter argument into an optional binding name and source.
     pub fn parse(input: &str) -> Self {
-        let prefix_len: usize = input
-            .chars()
-            .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
-            .map(char::len_utf8)
-            .sum();
-        let is_binding = prefix_len > 0
-            && !input
-                .chars()
-                .next()
-                .is_some_and(|first| first.is_ascii_digit())
-            && input[prefix_len..].starts_with('=');
-
-        if is_binding {
-            Self {
-                name: Some(input[..prefix_len].to_owned()),
-                source: input[prefix_len + 1..].to_owned(),
-            }
-        } else {
-            Self {
+        match input.split_once('=') {
+            Some((name, source)) if is_ident(name) => Self {
+                name: Some(name.to_owned()),
+                source: source.to_owned(),
+            },
+            _ => Self {
                 name: None,
                 source: input.to_owned(),
-            }
+            },
         }
     }
 

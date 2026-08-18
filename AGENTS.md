@@ -65,7 +65,9 @@ to escape is kept literally. Every content-producing lexer arm must set
 `word_started`, including the backslash arms — a word built solely from escapes
 is still a word. Words contain literal text and slots: `{}` (next positional
 filter), `{N}` (Nth positional), or `{name}` (a `NAME=FILTER` binding
-argument). Positional and named slot styles cannot be mixed (parse error). A
+argument). `{}` is numbered at parse time (successive positional indexes; `{N}`
+does not advance the counter), so expand never sees an unresolved Next.
+Positional and named slot styles cannot be mixed (parse error). A
 filter argument is a binding iff it matches `^[A-Za-z_][A-Za-z0-9_]*=`;
 everything else is a positional jq program handed to jaq verbatim — jq source
 never appears inside the template string, so filter bytes (braces, strings,
