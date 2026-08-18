@@ -1,74 +1,183 @@
+use std::collections::{HashMap, HashSet};
+
+use jaq_json::Val;
 use serde_json::Value;
 
-use crate::template::{Argument, Part};
-use crate::{ConfigPath, Error, Template};
+use crate::error::{Error, SlotLabel};
+use crate::jq::{self, JqError};
+use crate::template::{Filter, Part, Template};
 
 /// Expands a validated template against a JSON-compatible configuration tree.
 ///
-/// Template order and argument boundaries are preserved. Missing strict values
-/// and values incompatible with their placeholder forms are returned as
-/// [`Error`] values.
-pub fn expand(config: &Value, template: &Template) -> Result<Vec<String>, Error> {
-    let mut output = Vec::new();
+/// Each filter is evaluated once with the configuration root as its input.
+/// Words resolve in template order: a word consisting of exactly one slot
+/// appends every value its filter yields, while any other word containing a
+/// slot requires that filter to yield exactly one scalar value.
+pub fn expand(
+    config: &Value,
+    template: &Template,
+    filters: &[Filter],
+) -> Result<Vec<String>, Error> {
+    let mut positional: Vec<(usize, &Filter)> = Vec::new();
+    let mut named: HashMap<&str, (usize, &Filter)> = HashMap::new();
 
-    for (index, argument) in template.arguments.iter().enumerate() {
-        let argument_number = index + 1;
-        match argument {
-            Argument::Interpolated(parts) => {
+    for (index, filter) in filters.iter().enumerate() {
+        let argument = index + 1;
+        match filter.name() {
+            Some(name) => {
+                if named.contains_key(name) {
+                    return Err(Error::Binding {
+                        argument,
+                        message: format!("duplicate binding name `{name}`"),
+                    });
+                }
+                named.insert(name, (argument, filter));
+            }
+            None => {
+                positional.push((argument, filter));
+            }
+        }
+    }
+
+    let mut used_positional = HashSet::new();
+    let mut used_named = HashSet::new();
+    let mut first_use = Vec::new();
+    let mut seen = HashSet::new();
+
+    for word in &template.words {
+        for part in &word.parts {
+            let Part::Slot(label) = part else {
+                continue;
+            };
+            match label {
+                SlotLabel::Positional(index) if *index > positional.len() => {
+                    return Err(Error::Expansion {
+                        slot: label.clone(),
+                        word: word.index,
+                        message: format!(
+                            "template references slot {index} but only {} positional filter(s) were provided",
+                            positional.len()
+                        ),
+                    });
+                }
+                SlotLabel::Named(name) if !named.contains_key(name.as_str()) => {
+                    let mut available: Vec<_> = named.keys().copied().collect();
+                    available.sort_unstable();
+                    let available = if available.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        available
+                            .iter()
+                            .map(|name| format!("`{name}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    return Err(Error::Expansion {
+                        slot: label.clone(),
+                        word: word.index,
+                        message: format!("no filter is bound to `{name}` (available: {available})"),
+                    });
+                }
+                SlotLabel::Positional(index) => {
+                    used_positional.insert(*index);
+                }
+                SlotLabel::Named(name) => {
+                    used_named.insert(name.as_str());
+                }
+            }
+            if seen.insert(label) {
+                first_use.push((label, word.index));
+            }
+        }
+    }
+
+    for (index, (argument, _)) in positional.iter().enumerate() {
+        if !used_positional.contains(&(index + 1)) {
+            return Err(Error::Binding {
+                argument: *argument,
+                message: "positional filter is not referenced by any template slot".to_owned(),
+            });
+        }
+    }
+    // Sorted by argument so the earliest unreferenced *binding* is blamed rather
+    // than whichever one the hash map happens to yield first. The positional loop
+    // above runs to completion first, so an unreferenced positional always wins
+    // over an unreferenced binding, even one written earlier.
+    let mut unreferenced: Vec<(&str, usize)> = named
+        .iter()
+        .filter(|(name, _)| !used_named.contains(*name))
+        .map(|(name, (argument, _))| (*name, *argument))
+        .collect();
+    unreferenced.sort_by_key(|(_, argument)| *argument);
+    if let Some((name, argument)) = unreferenced.first() {
+        return Err(Error::Binding {
+            argument: *argument,
+            message: format!("filter bound to `{name}` is not referenced by any template slot"),
+        });
+    }
+
+    // Evaluate each referenced filter once, in first-use order.
+    let mut evaluated: HashMap<&SlotLabel, Vec<Val>> = HashMap::new();
+    for (label, first_word) in first_use {
+        let source = match label {
+            SlotLabel::Positional(index) => positional[index - 1].1.source(),
+            SlotLabel::Named(name) => named[name.as_str()].1.source(),
+        };
+        let values = jq::run(source, config).map_err(|error| match error {
+            JqError::Compile(message) => Error::Compile {
+                slot: label.clone(),
+                message,
+            },
+            JqError::Runtime(message) => Error::Expansion {
+                slot: label.clone(),
+                word: first_word,
+                message,
+            },
+        })?;
+        evaluated.insert(label, values);
+    }
+
+    // Emit argv entries in word order.
+    let mut output = Vec::new();
+    for word in &template.words {
+        match word.parts.as_slice() {
+            [Part::Slot(label)] => {
+                for value in &evaluated[label] {
+                    output.push(scalar(value).map_err(|message| Error::Expansion {
+                        slot: label.clone(),
+                        word: word.index,
+                        message: message.to_owned(),
+                    })?);
+                }
+            }
+            _ => {
                 let mut expanded = String::new();
-                for part in parts {
+                for part in &word.parts {
                     match part {
                         Part::Literal(literal) => expanded.push_str(literal),
-                        Part::Value { source, default } => {
-                            expanded.push_str(&expand_value(
-                                config,
-                                source,
-                                default.as_deref(),
-                                argument_number,
-                            )?);
+                        Part::Slot(label) => {
+                            let values = &evaluated[label];
+                            if values.len() != 1 {
+                                return Err(Error::Expansion {
+                                    slot: label.clone(),
+                                    word: word.index,
+                                    message: format!(
+                                        "embedded slots require exactly one value, but the filter yielded {}",
+                                        values.len()
+                                    ),
+                                });
+                            }
+                            expanded.push_str(&scalar(&values[0]).map_err(|message| {
+                                Error::Expansion {
+                                    slot: label.clone(),
+                                    word: word.index,
+                                    message: message.to_owned(),
+                                }
+                            })?);
                         }
                     }
                 }
                 output.push(expanded);
-            }
-            Argument::Spread { source } => {
-                let values = resolve(config, source, argument_number)?;
-                let values = values.as_array().ok_or_else(|| {
-                    expansion_error(argument_number, source, "spread requires an array")
-                })?;
-                for value in values {
-                    output
-                        .push(scalar(value).map_err(|message| {
-                            expansion_error(argument_number, source, message)
-                        })?);
-                }
-            }
-            Argument::Conditional { source, option } => {
-                let value = resolve(config, source, argument_number)?;
-                match value {
-                    Value::Bool(true) => output.push(option.clone()),
-                    Value::Bool(false) => {}
-                    _ => {
-                        return Err(expansion_error(
-                            argument_number,
-                            source,
-                            "conditional requires a boolean",
-                        ));
-                    }
-                }
-            }
-            Argument::Repeat { source, option } => {
-                let values = resolve(config, source, argument_number)?;
-                let values = values.as_array().ok_or_else(|| {
-                    expansion_error(argument_number, source, "repeat requires an array")
-                })?;
-                for value in values {
-                    output.push(option.clone());
-                    output
-                        .push(scalar(value).map_err(|message| {
-                            expansion_error(argument_number, source, message)
-                        })?);
-                }
             }
         }
     }
@@ -76,53 +185,18 @@ pub fn expand(config: &Value, template: &Template) -> Result<Vec<String>, Error>
     Ok(output)
 }
 
-fn expand_value(
-    config: &Value,
-    source: &ConfigPath,
-    default: Option<&str>,
-    argument: usize,
-) -> Result<String, Error> {
-    match source.resolve(config) {
-        Some(Value::Null) | None => default
-            .map(str::to_owned)
-            .ok_or_else(|| missing(source, argument)),
-        Some(value) => scalar(value).map_err(|message| expansion_error(argument, source, message)),
-    }
-}
-
-fn resolve<'a>(
-    config: &'a Value,
-    source: &ConfigPath,
-    argument: usize,
-) -> Result<&'a Value, Error> {
-    source
-        .resolve(config)
-        .filter(|value| !value.is_null())
-        .ok_or_else(|| missing(source, argument))
-}
-
-fn scalar(value: &Value) -> Result<String, &'static str> {
+fn scalar(value: &Val) -> Result<String, &'static str> {
     match value {
-        Value::String(value) => Ok(value.clone()),
-        Value::Number(value) => Ok(value.to_string()),
-        Value::Bool(value) => Ok(value.to_string()),
-        Value::Null => Err("null is not a scalar argument value"),
-        Value::Array(_) => Err("arrays require a spread or repeat placeholder"),
-        Value::Object(_) => Err("objects cannot be expanded as argument values"),
-    }
-}
-
-fn missing(source: &ConfigPath, argument: usize) -> Error {
-    Error::MissingValue {
-        path: source.as_str().to_owned(),
-        argument,
-    }
-}
-
-fn expansion_error(argument: usize, source: &ConfigPath, message: impl Into<String>) -> Error {
-    Error::Expansion {
-        argument,
-        path: source.as_str().to_owned(),
-        message: message.into(),
+        Val::Bool(boolean) => Ok(boolean.to_string()),
+        Val::Num(number) => Ok(number.to_string()),
+        Val::TStr(bytes) => std::str::from_utf8(bytes.as_ref() as &[u8])
+            .map(str::to_owned)
+            .map_err(|_| "filter produced a string that is not valid UTF-8"),
+        Val::BStr(_) => Err("byte strings cannot be expanded as argument values"),
+        Val::Null => Err(
+            "filters must not produce null (missing keys yield null; for defaults, use `// \"default\"`)",
+        ),
+        Val::Arr(_) => Err("arrays must be iterated inside the filter, e.g. `.field[]`"),
+        Val::Obj(_) => Err("objects cannot be expanded as argument values"),
     }
 }
